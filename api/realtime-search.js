@@ -6,16 +6,33 @@ const TTL = 5 * 60 * 1000; // 5 min
 const NIMBLE = "https://api.nimbleway.com/scrape";
 const KEY = process.env.NIMBLEWAY_KEY;
 
+// ---- CORS: autoriza tu tienda ----
+const ALLOWED_ORIGINS = new Set([
+  "https://www.jboxly.com",
+  "https://jboxly.com",
+  "https://jboxly.myshopify.com" // útil en preview del tema
+]);
+
 export default async function handler(req, res) {
+  const origin = req.headers.origin || "";
+  const allow = ALLOWED_ORIGINS.has(origin) ? origin : "https://www.jboxly.com";
+  const cors = {
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400"
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+
   try {
     const { q = "" } = req.query;
     const query = String(q || "").trim();
-    if (!query) return res.status(200).json({ items: [] });
+    if (!query) { res.writeHead(200, cors).end(JSON.stringify({ items: [] })); return; }
 
     const key = `search:${query.toLowerCase()}`;
     const now = Date.now();
     const hit = cache.get(key);
-    if (hit && now - hit.t < TTL) return res.status(200).json(hit.data);
+    if (hit && now - hit.t < TTL) { res.writeHead(200, cors).end(JSON.stringify(hit.data)); return; }
 
     const [amazon, shein] = await Promise.allSettled([
       searchAmazonNimble(query),
@@ -29,16 +46,16 @@ export default async function handler(req, res) {
 
     const payload = { items };
     cache.set(key, { t: now, data: payload });
-    res.status(200).json(payload);
+    res.writeHead(200, cors).end(JSON.stringify(payload));
   } catch (e) {
-    res.status(200).json({ items: [] });
+    res.writeHead(200, cors).end(JSON.stringify({ items: [] }));
   }
 }
 
-// --- AMAZON vía Nimbleway (búsqueda) ---
+// --- AMAZON vía Nimbleway (resultados de búsqueda) ---
 async function searchAmazonNimble(q) {
-  const searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(q)}`;
-  const html = await nimbleScrape(searchUrl, { country: "US" });
+  const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}`;
+  const html = await nimbleScrape(url, { country: "US" });
   const $ = cheerio.load(html);
   const items = [];
   $("div.s-main-slot div[data-component-type='s-search-result']").each((_, el) => {
@@ -54,7 +71,7 @@ async function searchAmazonNimble(q) {
   return items.slice(0, 12);
 }
 
-// --- SHEIN vía Nimbleway (búsqueda) ---
+// --- SHEIN vía Nimbleway (resultados de búsqueda) ---
 async function searchSheinNimble(q) {
   const target = `https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`;
   const html = await nimbleScrape(target, { render: true });
@@ -72,7 +89,7 @@ async function searchSheinNimble(q) {
   return items.slice(0, 12);
 }
 
-// --- Helper común con Nimbleway ---
+// --- Helper común ---
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
   const u = `${NIMBLE}?url=${encodeURIComponent(url)}&render=${String(render)}&country=${country}`;

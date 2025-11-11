@@ -16,76 +16,95 @@ export default async function handler(req, res) {
   const NIMBLE_AUTH = process.env.NIMBLE_AUTH_HEADER || "";
 
   if (HEALTH) {
-    return res.status(200).json({
-      ok: true,
-      hasBase: !!NIMBLE_BASE,
-      hasAuth: !!NIMBLE_AUTH,
-    });
+    return res.status(200).json({ ok: true, hasBase: !!NIMBLE_BASE, hasAuth: !!NIMBLE_AUTH });
   }
 
-  if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
   if (!NIMBLE_BASE || !NIMBLE_AUTH) {
     return res.status(500).json({ ok: false, error: "Nimble not configured" });
   }
 
-  // Seleccionar destino
-  let target = "";
-  let source = "";
-  if (probe === "shein") {
-    target = `https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`;
-    source = "shein";
-  } else if (probe === "amazon") {
-    target = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
-    source = "amazon";
-  } else {
-    target = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
-    source = "amazon";
-  }
-
-  try {
-    let items = [];
-    if (source === "amazon") {
-      const html = await nimbleFetch(target, { render: true, country: "US", locale: "en" });
-      items = parseAmazon(html);
-      // Fallback: si no encontró nada, reintenta con render otra vez (a veces llega layout alterno)
-      if (items.length === 0) {
-        const html2 = await nimbleFetch(target, { render: true, country: "US", locale: "en" });
-        items = parseAmazon(html2);
-      }
-      return res.status(200).json({ ok: true, source, target, count: items.length, items });
+  // ---------- PROBES ----------
+  if (probe === "echo") {
+    try {
+      const html = await nimbleFetch("https://example.com/", { render: true });
+      return res.status(200).json({ ok: true, source: "echo", len: html.length, head: html.slice(0,120) });
+    } catch (e) {
+      return res.status(502).json({ ok: false, source: "echo", error: String(e?.message || e) });
     }
-
-    if (source === "shein") {
-      // 1) PSE
-      let html = "", list = [];
+  }
+  if (probe === "amazon") {
+    if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
+    try {
+      const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
+      const html = await nimbleFetch(url, { render: true, country: "US", locale: "en" });
+      const items = parseAmazon(html);
+      return res.status(200).json({ ok: true, source: "amazon", target: url, count: items.length, items });
+    } catch (e) {
+      return res.status(504).json({ ok: false, source: "amazon", error: String(e?.message || e) });
+    }
+  }
+  if (probe === "shein") {
+    if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
+    try {
+      // PSE
+      let list = [];
       try {
-        html = await nimbleFetch(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
-        list = parseShein(html);
+        const html1 = await nimbleFetch(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
+        list = list.concat(parseShein(html1));
       } catch {}
-      // 2) Fallback clásico si muy pocos o timeout
+      // Fallback clásico
       if (list.length < 6) {
         try {
           const html2 = await nimbleFetch(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
           list = list.concat(parseShein(html2));
         } catch {}
       }
-      // Dedup + limitar
-      const seen = new Set();
-      const out = [];
+      // dedup + top 24
+      const seen = new Set(), out = [];
       for (const it of list) {
-        const key = it.url || it.title;
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(it);
+        const k = it.url || it.title;
+        if (!k || seen.has(k)) continue;
+        seen.add(k); out.push(it);
         if (out.length >= 24) break;
       }
-      return res.status(200).json({ ok: true, source, target, count: out.length, items: out });
+      return res.status(200).json({ ok: true, source: "shein", count: out.length, items: out });
+    } catch (e) {
+      return res.status(504).json({ ok: false, source: "shein", error: String(e?.message || e) });
+    }
+  }
+
+  // ---------- ENDPOINT NORMAL ----------
+  if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
+  try {
+    const urlA = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
+    const [htmlA, htmlS] = await Promise.allSettled([
+      nimbleFetch(urlA, { render: true, country: "US", locale: "en" }),
+      nimbleFetch(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true })
+    ]);
+
+    let items = [];
+    if (htmlA.status === "fulfilled") items = items.concat(parseAmazon(htmlA.value));
+    if (htmlS.status === "fulfilled") items = items.concat(parseShein(htmlS.value));
+
+    // Fallback Shein clásico si sigue bajo
+    if (items.filter(x=>x.source==="shein").length < 6) {
+      try {
+        const html2 = await nimbleFetch(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
+        items = items.concat(parseShein(html2));
+      } catch {}
     }
 
-    return res.status(400).json({ ok: false, error: "Invalid source" });
+    // dedup
+    const seen = new Set(), out = [];
+    for (const it of items) {
+      const k = it.url || it.title;
+      if (!k || seen.has(k)) continue;
+      seen.add(k); out.push(it);
+      if (out.length >= 24) break;
+    }
 
-  } catch (err) {
-    console.log("[JBOXLY][ERR]", String(err?.message || err));
+    return res.status(200).json({ ok: true, count: out.length, items: out });
+  } catch (e) {
     return res.status(504).json({ ok: false, error: "Upstream timeout or error" });
   }
 }
@@ -96,10 +115,10 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
   const BASE = process.env.NIMBLE_BASE;
   const AUTH = process.env.NIMBLE_AUTH_HEADER;
 
-  // Timeout 15s + 1 reintento rápido
-  const fetchOnce = async () => {
+  // Timeout 25s + reintentos con backoff
+  const once = async () => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), 25000);
     try {
       const r = await fetch(BASE, {
         method: "POST",
@@ -120,24 +139,31 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
       const text = await r.text();
       clearTimeout(timer);
       if (!r.ok) throw new Error(`Nimble ${r.status}: ${text.slice(0,200)}`);
-      // Puede venir {html:"..."} o HTML plano
       let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
       const html = typeof data === "string" ? data : (data.html || data.content || "");
       if (!html || html.length < 400) throw new Error("Empty HTML");
-      console.log("[JBOXLY] fetched OK len:", html.length);
+      console.log("[JBOXLY] fetched OK len:", html.length, "url:", url.slice(0,120));
       return html;
     } catch (e) {
       clearTimeout(timer);
+      console.log("[JBOXLY] fetch error:", String(e?.message || e));
       throw e;
     }
   };
 
-  try {
-    return await fetchOnce();
-  } catch (e) {
-    console.log("[JBOXLY] retrying after error:", String(e?.message || e));
-    return await fetchOnce();
+  let attempt = 0;
+  let last;
+  while (attempt < 2) {
+    try {
+      return await once();
+    } catch (e) {
+      last = e;
+      const backoff = 800 * Math.pow(2, attempt); // 800ms, 1600ms
+      await new Promise(r => setTimeout(r, backoff));
+      attempt++;
+    }
   }
+  throw last || new Error("Nimble upstream error");
 }
 
 /* ======================== Parsers ======================== */
@@ -147,7 +173,6 @@ function parseAmazon(html) {
   const $ = cheerio.load(html);
   const out = [];
 
-  // Variante principal
   $("div.s-main-slot div.s-result-item[data-asin]").each((_, el) => {
     const $el = $(el);
     const asin = $el.attr("data-asin");
@@ -156,7 +181,6 @@ function parseAmazon(html) {
     if (href && href.startsWith("/")) href = "https://www.amazon.com" + href;
     const img = $el.find("img.s-image").attr("src") || "";
 
-    // precio: hay varias estructuras
     let price = $el.find(".a-price .a-offscreen").first().text().trim();
     if (!price) {
       const whole = $el.find(".a-price-whole").first().text().replace(/[^\d]/g,"");
@@ -168,7 +192,6 @@ function parseAmazon(html) {
     if (title && href) out.push({ source: "amazon", title, url: href, image: img, price, currency, asin });
   });
 
-  // Variante secundaria (tarjeta compacta)
   if (out.length === 0) {
     $("div.s-card-container, div.s-result-card").each((_, el) => {
       const $el = $(el);
@@ -187,66 +210,49 @@ function parseAmazon(html) {
     });
   }
 
-  // Fallback desde JSON embebido (cuando hay un descriptor)
+  // Fallback desde JSON embebido
   if (out.length === 0) {
-    const scriptJSON = $("script[type='application/ld+json']").map((_, el) => $(el).html() || "").get().join("\n");
-    try {
-      const blocks = scriptJSON.split("\n").map(s => s.trim()).filter(Boolean);
-      for (const b of blocks) {
-        try {
-          const data = JSON.parse(b);
-          if (Array.isArray(data)) {
-            for (const d of data) {
-              if (d && d.name && d.url) {
-                out.push({
-                  source: "amazon",
-                  title: d.name,
-                  url: d.url,
-                  image: d.image || "",
-                  price: d.offers?.price || "",
-                  currency: d.offers?.priceCurrency || "$"
-                });
-              }
-            }
-          } else if (data && data.name && data.url) {
-            out.push({
-              source: "amazon",
-              title: data.name,
-              url: data.url,
-              image: data.image || "",
-              price: data.offers?.price || "",
-              currency: data.offers?.priceCurrency || "$"
-            });
-          }
-        } catch {}
-      }
-    } catch {}
+    const scripts = $("script[type='application/ld+json']").map((_, el) => $(el).html() || "").get();
+    for (const s of scripts) {
+      try {
+        const data = JSON.parse(s);
+        const push = (d) => {
+          if (d && d.name && d.url) out.push({
+            source: "amazon",
+            title: d.name,
+            url: d.url.startsWith("http") ? d.url : `https://www.amazon.com${d.url}`,
+            image: Array.isArray(d.image) ? d.image[0] : (d.image || ""),
+            price: d.offers?.price || "",
+            currency: d.offers?.priceCurrency || "$"
+          });
+        };
+        if (Array.isArray(data)) data.forEach(push); else push(data);
+      } catch {}
+    }
   }
 
   return out.slice(0, 24);
 }
 
-// SHEIN — intenta JSON embebido (goods_list) y fallback DOM
+// SHEIN — JSON embebido (goods_list) + fallback DOM
 function parseShein(html) {
   const out = [];
-
-  // JSON embebido
   const jsonArr = extractJSONArray(html, /"goods_list"\s*:\s*(\[[\s\S]*?\])/)
                || extractJSONArray(html, /"goodsList"\s*:\s*(\[[\s\S]*?\])/);
+
   if (Array.isArray(jsonArr)) {
     for (const g of jsonArr) {
       const title = (g.goods_name || g.goodsName || "").toString().trim();
       const goodsId = g.goods_id || g.goodsId;
       let url = g.detail_url || g.goods_url || (goodsId ? `https://us.shein.com/item/${goodsId}.html` : "");
       let image = g.goods_img || g.goodsImg || g.goods_thumb || "";
+      if (image && image.startsWith("//")) image = "https:" + image;
       let price = String(g.sale_price || g.salePrice || "");
       const currency = g.currency || (price ? "$" : "");
-      if (image && image.startsWith("//")) image = "https:" + image;
       if (title && url) out.push({ source: "shein", title, url, image, price, currency });
     }
   }
 
-  // Fallback DOM si no hubo JSON
   if (out.length === 0) {
     const $ = cheerio.load(html);
     $(".S-product-item, .product-card, .c-product-card").each((_, el) => {

@@ -218,20 +218,65 @@ function parseShein(html){
 /* ============ Helper Nimble (residencial + rotación) ============ */
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
-  const params = new URLSearchParams({
+
+  // 1) Endpoints candidatos (según tenant/plan)
+  const BASES = [
+    "https://api.nimbleway.com/scrape",
+    "https://api.nimbleway.com/api/v1/scrape",
+    "https://api.webit.live/scrape",
+    "https://api.webit.live/api/v1/scrape"
+  ];
+
+  // 2) Dos estilos de auth que he visto en cuentas reales
+  const makeHeaders = (style) =>
+    style === "bearer"
+      ? { Authorization: `Bearer ${KEY}` }
+      : { "x-api-key": KEY };
+
+  // 3) Query params comunes
+  const q = new URLSearchParams({
     url,
     render: String(render),
     country,
     proxy_type: "residential",
     rotate: "true"
-  });
-  const r = await fetch(`${NIMBLE}?${params}`, {
-    headers: { Authorization: `Bearer ${KEY}` }
-  });
-  const text = await r.text();
-  let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
-  if (!r.ok) throw new Error(`Nimbleway error ${r.status} ${data?.error || ""}`);
-  const html = data.html || data.content || "";
-  console.log("[JBOXLY] fetched:", url.slice(0,100), "len:", html.length);
-  return html;
+  }).toString();
+
+  let lastErr = null;
+
+  // Probar combinaciones hasta que una responda OK
+  for (const base of BASES) {
+    for (const authStyle of ["bearer", "xkey"]) {
+      try {
+        const endpoint = `${base}?${q}`;
+        const r = await fetch(endpoint, { headers: makeHeaders(authStyle) });
+
+        const text = await r.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { html: text }; }
+
+        if (!r.ok) {
+          // guarda último error y sigue probando
+          lastErr = new Error(`Nimbleway ${r.status} via ${base} (${authStyle}) ${data?.error || ""}`);
+          continue;
+        }
+
+        const html = data.html || data.content || "";
+        if (!html || html.length < 500) {
+          // contenido sospechoso; sigue intentando siguiente combinación
+          lastErr = new Error(`Empty HTML via ${base} (${authStyle})`);
+          continue;
+        }
+
+        console.log("[JBOXLY] fetched OK:", base, `(${authStyle})`, "len:", html.length);
+        return html;
+      } catch (e) {
+        lastErr = e;
+        // intenta siguiente combinación
+      }
+    }
+  }
+
+  // Si nada funcionó, lanza el último error visto
+  throw lastErr || new Error("Nimbleway: no working endpoint/auth combo");
 }

@@ -167,12 +167,12 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
 }
 
 /* ======================== Parsers ======================== */
-
-// AMAZON — múltiples selectores + fallback desde JSON embebido
+// AMAZON — robusto con fallback genérico
 function parseAmazon(html) {
   const $ = cheerio.load(html);
   const out = [];
 
+  // 1) Variante principal (slot + data-asin)
   $("div.s-main-slot div.s-result-item[data-asin]").each((_, el) => {
     const $el = $(el);
     const asin = $el.attr("data-asin");
@@ -192,6 +192,7 @@ function parseAmazon(html) {
     if (title && href) out.push({ source: "amazon", title, url: href, image: img, price, currency, asin });
   });
 
+  // 2) Variante secundaria (tarjeta compacta)
   if (out.length === 0) {
     $("div.s-card-container, div.s-result-card").each((_, el) => {
       const $el = $(el);
@@ -210,7 +211,7 @@ function parseAmazon(html) {
     });
   }
 
-  // Fallback desde JSON embebido
+  // 3) Fallback desde JSON embebido (ld+json)
   if (out.length === 0) {
     const scripts = $("script[type='application/ld+json']").map((_, el) => $(el).html() || "").get();
     for (const s of scripts) {
@@ -231,12 +232,44 @@ function parseAmazon(html) {
     }
   }
 
+  // 4) **Fallback GENÉRICO** — “caza” enlaces /dp/
+  if (out.length === 0) {
+    const seen = new Set();
+    $("a[href*='/dp/']").each((_, a) => {
+      let href = $(a).attr("href") || "";
+      if (!href) return;
+      if (href.startsWith("/")) href = "https://www.amazon.com" + href;
+      if (!href.includes("/dp/")) return; // seguridad
+      if (seen.has(href)) return;
+      seen.add(href);
+
+      const title = ($(a).text() || "").trim();
+      if (!title) return;
+
+      // Busca imagen cerca (padre/abuelo)
+      let $box = $(a).closest("div");
+      let img = $box.find("img").attr("src") || "";
+      if (!img) img = $("img").filter((i, el) => $(el).closest("a")[0] === a).attr("src") || "";
+
+      // Extrae precio por regex en texto cercano
+      const nearText = $box.text() || "";
+      const m = nearText.match(/\$[0-9]+(?:\.[0-9]{2})?/);
+      const price = m ? m[0] : "";
+      const currency = price ? "$" : "";
+
+      out.push({ source: "amazon", title, url: href, image: img, price, currency });
+    });
+  }
+
   return out.slice(0, 24);
 }
 
-// SHEIN — JSON embebido (goods_list) + fallback DOM
+// SHEIN — robusto con fallback genérico
 function parseShein(html) {
+  const $ = cheerio.load(html);
   const out = [];
+
+  // 1) JSON embebido (goods_list/goodsList)
   const jsonArr = extractJSONArray(html, /"goods_list"\s*:\s*(\[[\s\S]*?\])/)
                || extractJSONArray(html, /"goodsList"\s*:\s*(\[[\s\S]*?\])/);
 
@@ -253,8 +286,8 @@ function parseShein(html) {
     }
   }
 
+  // 2) DOM (varias clases conocidas)
   if (out.length === 0) {
-    const $ = cheerio.load(html);
     $(".S-product-item, .product-card, .c-product-card").each((_, el) => {
       const $el = $(el);
       const title = $el.find(".S-product-item__name, .product-title, .c-product-card__name").first().text().trim();
@@ -269,26 +302,31 @@ function parseShein(html) {
     });
   }
 
-  return out.slice(0, 24);
-}
+  // 3) **Fallback GENÉRICO** — enlaces /item/
+  if (out.length === 0) {
+    const seen = new Set();
+    $("a[href*='/item/']").each((_, a) => {
+      let href = $(a).attr("href") || "";
+      if (href.startsWith("/")) href = "https://us.shein.com" + href;
+      if (!href.includes("/item/")) return;
+      if (seen.has(href)) return;
+      seen.add(href);
 
-/* ============== JSON array extractor helpers ============== */
-function extractJSONArray(html, regex) {
-  try {
-    const m = html.match(regex);
-    if (!m) return null;
-    const raw = balanceBrackets(m[1]);
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : null;
-  } catch { return null; }
-}
-function balanceBrackets(str) {
-  let open = 0, out = "";
-  for (const ch of str) {
-    if (ch === "[") open++;
-    if (ch === "]") open--;
-    out += ch;
-    if (open === 0) break;
+      const title = ($(a).text() || "").trim();
+      if (!title) return;
+
+      let $box = $(a).closest("div");
+      let image = $box.find("img").attr("src") || "";
+      if (image && image.startsWith("//")) image = "https:" + image;
+
+      const nearText = $box.text() || "";
+      const m = nearText.match(/\$[0-9]+(?:\.[0-9]{2})?/);
+      const price = m ? m[0].replace(/^\$/, "") : "";
+      const currency = price ? "$" : "";
+
+      out.push({ source: "shein", title, url: href, image, price, currency });
+    });
   }
-  return out;
+
+  return out.slice(0, 24);
 }

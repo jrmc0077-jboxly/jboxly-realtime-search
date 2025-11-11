@@ -1,8 +1,8 @@
-import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
+// ====== Config ======
 const cache = new Map();
-const TTL = 5 * 60 * 1000;
+const TTL = 5 * 60 * 1000; // 5 min
 const NIMBLE = "https://api.nimbleway.com/scrape";
 const KEY = process.env.NIMBLEWAY_KEY;
 
@@ -23,35 +23,60 @@ export default async function handler(req, res) {
   };
   if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
 
-  const { q = "", probe = "", health = "" } = req.query;
+  const { q = "", probe = "", health = "", mock = "" } = req.query;
   const query = String(q || "").trim();
 
-  // --- Health check ---
+  // ---- Health: verifica que la KEY está en runtime ----
   if (health) {
     res.writeHead(200, { ...cors, "content-type": "application/json" })
        .end(JSON.stringify({ ok: true, hasKey: Boolean(KEY) }));
     return;
   }
 
-  // --- Probes con try/catch para no crashear ---
+  // ---- Modo demo para probar el front YA ----
+  if (mock === "1") {
+    const items = Array.from({ length: 8 }).map((_, i) => ({
+      source: "mock",
+      title: `Producto demo ${i + 1}`,
+      price: (19.99 + i).toFixed(2),
+      currency: "USD",
+      image: "https://via.placeholder.com/400x300?text=Demo",
+      url: "https://example.com"
+    }));
+    res.writeHead(200, cors).end(JSON.stringify({ items }));
+    return;
+  }
+
+  // ---- Probes de diagnóstico (no deben crashear) ----
   if (probe) {
     if (!query) { res.writeHead(200, cors).end(JSON.stringify({ ok: true, note: "faltó q" })); return; }
     try {
       if (probe === "amazon") {
-        const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
+        const html = await nimbleScrape(
+          `https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`,
+          { render: true, country: "US" }
+        );
         const out = inspectAmazon(html);
-        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
+        res.writeHead(200, { ...cors, "content-type": "application/json" })
+           .end(JSON.stringify({ probe, q: query, ...out }));
         return;
       }
       if (probe === "shein") {
-        const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
+        const html1 = await nimbleScrape(
+          `https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`,
+          { render: true }
+        );
         const out1 = inspectShein(html1);
         let out2 = {};
         if (out1.count < 6) {
-          const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
+          const html2 = await nimbleScrape(
+            `https://us.shein.com/search?keyword=${encodeURIComponent(query)}`,
+            { render: true }
+          );
           out2 = inspectShein(html2);
         }
-        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
+        res.writeHead(200, { ...cors, "content-type": "application/json" })
+           .end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
         return;
       }
       res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" }));
@@ -63,21 +88,44 @@ export default async function handler(req, res) {
     return;
   }
 
+  // ---- Endpoint normal ----
   try {
-    // ... (tu bloque normal que hace searchAmazon/searchShein y responde items)
+    if (!query) { res.writeHead(200, cors).end(JSON.stringify({ items: [] })); return; }
+
+    const key = `search:${query.toLowerCase()}`;
+    const now = Date.now();
+    const hit = cache.get(key);
+    if (hit && now - hit.t < TTL) {
+      res.writeHead(200, cors).end(JSON.stringify(hit.data));
+      return;
+    }
+
+    const [amazon, shein] = await Promise.allSettled([
+      searchAmazon(query),
+      searchShein(query)
+    ]);
+
+    const a = amazon.status === "fulfilled" ? amazon.value : [];
+    const s = shein.status === "fulfilled" ? shein.value : [];
+
+    console.log(`[JBOXLY] q="${query}" -> amazon:${a.length} shein:${s.length}`);
+    const items = [...a, ...s].slice(0, 24);
+    const payload = { items };
+    cache.set(key, { t: now, data: payload });
+    res.writeHead(200, cors).end(JSON.stringify(payload));
   } catch (e) {
     console.error("[JBOXLY] ERROR", e);
     res.writeHead(200, cors).end(JSON.stringify({ items: [] }));
   }
 }
 
-
-/* ------------ AMAZON ------------ */
-async function searchAmazon(q){
+/* =================== AMAZON =================== */
+async function searchAmazon(q) {
   const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
   const html = await nimbleScrape(url, { render: true, country: "US" });
   const $ = cheerio.load(html);
   const out = [];
+
   $('div.s-main-slot [data-component-type="s-search-result"]').each((_, el) => {
     const title = $(el).find("h2 a span").text().trim();
     let href = $(el).find("h2 a").attr("href") || "";
@@ -89,9 +137,12 @@ async function searchAmazon(q){
       const pF = $(el).find(".a-price-fraction").first().text().replace(/[^\d]/g, "");
       if (pW) price = `${pW}.${pF || "00"}`;
     }
+
     const img = $(el).find("img.s-image").attr("src");
     if (title && href) out.push({ source: "amazon", title, price, currency: "USD", image: img, url: href });
   });
+
+  console.log("[JBOXLY] amazon nodes:", out.length);
   return out.slice(0, 12);
 }
 function inspectAmazon(html){
@@ -102,19 +153,29 @@ function inspectAmazon(html){
   return { count: nodes.length, sample };
 }
 
-/* ------------ SHEIN ------------ */
+/* =================== SHEIN =================== */
 async function searchShein(q){
   const list = [];
+
   try {
-    const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
+    const html1 = await nimbleScrape(
+      `https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`,
+      { render: true }
+    );
     list.push(...parseShein(html1));
   } catch(e){ console.warn("[JBOXLY] shein pse fail", e?.message); }
+
   if (list.length < 8) {
     try {
-      const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
+      const html2 = await nimbleScrape(
+        `https://us.shein.com/search?keyword=${encodeURIComponent(q)}`,
+        { render: true }
+      );
       list.push(...parseShein(html2));
     } catch(e){ console.warn("[JBOXLY] shein classic fail", e?.message); }
   }
+
+  // dedup
   const seen = new Set(), out = [];
   for (const it of list) {
     const k = it.url || it.title;
@@ -122,11 +183,13 @@ async function searchShein(q){
     seen.add(k); out.push(it);
     if (out.length >= 12) break;
   }
+  console.log("[JBOXLY] shein total dedup:", out.length);
   return out;
 }
 function parseShein(html){
   const $ = cheerio.load(html);
   const items = [];
+
   $("[data-test='product-card'], .S-product-item, .product-card").each((_, el) => {
     const title = $(el).find(".S-product-item__name, .product-title, .S-product-item__info a").first().text().trim();
     const price = $(el).find(".S-product-item__price, .price, .original, .sale-price").first().text().trim();
@@ -136,6 +199,7 @@ function parseShein(html){
     if (img && img.startsWith("//")) img = "https:" + img;
     if (title && href) items.push({ source: "shein", title, price, currency: "USD", image: img, url: href });
   });
+
   if (items.length === 0) {
     $(".c-product-card, .j-expose__product-item").each((_, el) => {
       const title = $(el).find(".c-product-card__name, .goods-title, a[title]").first().text().trim();
@@ -147,10 +211,11 @@ function parseShein(html){
       if (title && href) items.push({ source: "shein", title, price, currency: "USD", image: img, url: href });
     });
   }
+
   return items;
 }
 
-/* ------------ Helper Nimble (residencial + rotación) ------------ */
+/* ============ Helper Nimble (residencial + rotación) ============ */
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
   const params = new URLSearchParams({
@@ -160,9 +225,13 @@ async function nimbleScrape(url, { render = false, country = "US" } = {}) {
     proxy_type: "residential",
     rotate: "true"
   });
-  const r = await fetch(`${NIMBLE}?${params}`, { headers: { Authorization: `Bearer ${KEY}` } });
+  const r = await fetch(`${NIMBLE}?${params}`, {
+    headers: { Authorization: `Bearer ${KEY}` }
+  });
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
   if (!r.ok) throw new Error(`Nimbleway error ${r.status} ${data?.error || ""}`);
-  return data.html || data.content || "";
+  const html = data.html || data.content || "";
+  console.log("[JBOXLY] fetched:", url.slice(0,100), "len:", html.length);
+  return html;
 }

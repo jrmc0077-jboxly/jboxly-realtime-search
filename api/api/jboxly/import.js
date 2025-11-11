@@ -5,6 +5,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400'); // opcional, evita preflights repetidos
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   if (req.method !== 'POST') {
@@ -27,12 +28,15 @@ export default async function handler(req, res) {
     }
 
     // ====== ENV VARS ======
-    const store = process.env.SHOPIFY_STORE;               // ej: pillar.myshopify.com
+    const store = process.env.SHOPIFY_STORE;               // ej: pillar.myshopify.com (sin https)
     const token = process.env.SHOPIFY_ADMIN_API_TOKEN;     // Admin API access token
     const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-10';
 
     if (!store || !token) {
-      return res.status(500).json({ ok: false, error: 'Missing SHOPIFY_STORE or SHOPIFY_ADMIN_API_TOKEN env vars' });
+      return res.status(500).json({
+        ok: false,
+        error: 'Missing SHOPIFY_STORE or SHOPIFY_ADMIN_API_TOKEN env vars'
+      });
     }
 
     // Handle sugerido a partir del título
@@ -45,18 +49,18 @@ export default async function handler(req, res) {
     const productPayload = {
       product: {
         title,
-        handle,                // Shopify ajustará si ya existe
-        status: 'draft',       // borrador
+        handle,                 // Shopify ajustará si ya existe
+        status: 'draft',        // crea como borrador
         body_html: url
           ? `<p>Importado desde ${source || 'externo'}: <a href="${url}" target="_blank" rel="nofollow noopener">ver origen</a></p>`
           : '',
-        images: images.slice(0, 8).map(src => ({ src })),
+        images: images.slice(0, 8).map(src => ({ src })), // URLs públicas
         variants: [
           {
             price: (price != null && price !== '') ? String(price) : undefined,
             compare_at_price: (compare_at_price != null && compare_at_price !== '') ? String(compare_at_price) : undefined
           }
-        ].filter(Boolean)
+        ]
       }
     };
 
@@ -70,7 +74,7 @@ export default async function handler(req, res) {
       body: JSON.stringify(productPayload)
     });
 
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
 
     if (!resp.ok) {
       return res.status(resp.status).json({ ok: false, error: data?.errors || data });
@@ -85,6 +89,6 @@ export default async function handler(req, res) {
 
   } catch (e) {
     console.error('[IMPORT] error:', e);
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({ ok: false, error: e?.message || 'Unhandled error' });
   }
 }

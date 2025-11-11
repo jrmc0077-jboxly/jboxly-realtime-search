@@ -219,21 +219,30 @@ function parseShein(html){
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
 
-  // 1) Endpoints candidatos (según tenant/plan)
-  const BASES = [
-    "https://api.nimbleway.com/scrape",
-    "https://api.nimbleway.com/api/v1/scrape",
-    "https://api.webit.live/scrape",
-    "https://api.webit.live/api/v1/scrape"
-  ];
+  // Preferir configuración explícita (desde tu Playground)
+  const CFG_BASE  = process.env.NIMBLE_BASE || "";
+  const CFG_AUTH  = (process.env.NIMBLE_AUTH || "").toLowerCase(); // "bearer" | "xkey"
 
-  // 2) Dos estilos de auth que he visto en cuentas reales
+  // Fallbacks automáticos (por si no pones variables)
+  const BASES = CFG_BASE
+    ? [CFG_BASE]  // si definiste NIMBLE_BASE, probamos solo ese primero
+    : [
+        "https://api.nimbleway.com/scrape",
+        "https://api.nimbleway.com/api/v1/scrape",
+        "https://api.webit.live/scrape",
+        "https://api.webit.live/api/v1/scrape"
+      ];
+
+  const AUTH_STYLES = CFG_AUTH
+    ? [CFG_AUTH]   // "bearer" o "xkey"
+    : ["bearer","xkey"];
+
   const makeHeaders = (style) =>
     style === "bearer"
       ? { Authorization: `Bearer ${KEY}` }
       : { "x-api-key": KEY };
 
-  // 3) Query params comunes
+  // Parámetros típicos (ajusta si tu Playground muestra otros)
   const q = new URLSearchParams({
     url,
     render: String(render),
@@ -243,40 +252,23 @@ async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   }).toString();
 
   let lastErr = null;
-
-  // Probar combinaciones hasta que una responda OK
   for (const base of BASES) {
-    for (const authStyle of ["bearer", "xkey"]) {
+    for (const style of AUTH_STYLES) {
       try {
-        const endpoint = `${base}?${q}`;
-        const r = await fetch(endpoint, { headers: makeHeaders(authStyle) });
-
+        const endpoint = base.includes("?") ? `${base}&${q}` : `${base}?${q}`;
+        const r = await fetch(endpoint, { headers: makeHeaders(style) });
         const text = await r.text();
-        let data;
-        try { data = JSON.parse(text); } catch { data = { html: text }; }
+        let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
 
-        if (!r.ok) {
-          // guarda último error y sigue probando
-          lastErr = new Error(`Nimbleway ${r.status} via ${base} (${authStyle}) ${data?.error || ""}`);
-          continue;
-        }
+        if (!r.ok) { lastErr = new Error(`Nimbleway ${r.status} via ${base} (${style}) ${data?.error || ""}`); continue; }
 
         const html = data.html || data.content || "";
-        if (!html || html.length < 500) {
-          // contenido sospechoso; sigue intentando siguiente combinación
-          lastErr = new Error(`Empty HTML via ${base} (${authStyle})`);
-          continue;
-        }
+        if (!html || html.length < 400) { lastErr = new Error(`Empty HTML via ${base} (${style})`); continue; }
 
-        console.log("[JBOXLY] fetched OK:", base, `(${authStyle})`, "len:", html.length);
+        console.log("[JBOXLY] fetched OK:", base, `(${style})`, "len:", html.length);
         return html;
-      } catch (e) {
-        lastErr = e;
-        // intenta siguiente combinación
-      }
+      } catch (e) { lastErr = e; }
     }
   }
-
-  // Si nada funcionó, lanza el último error visto
-  throw lastErr || new Error("Nimbleway: no working endpoint/auth combo");
+  throw lastErr || new Error("Nimbleway: no working endpoint/auth");
 }

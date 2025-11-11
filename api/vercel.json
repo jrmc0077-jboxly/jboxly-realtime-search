@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "^/api/ping$", "dest": "/api/ping.js" },
+    { "src": "^/api/realtime-search$", "dest": "/api/realtime-search.js" },
+    { "src": "^/realtime-search$", "dest": "/api/realtime-search.js" }
+  ]
+}

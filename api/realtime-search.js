@@ -1,16 +1,33 @@
+// api/realtime-search.js
 import * as cheerio from "cheerio";
 
-// ====== Config ======
-const cache = new Map();
-const TTL = 5 * 60 * 1000; // 5 min
-const NIMBLE = "https://api.nimbleway.com/scrape";
-const KEY = process.env.NIMBLEWAY_KEY;
+/**
+ * ==========================================================
+ *  JBOXLY Realtime Search (Amazon + SHEIN) — Vercel Function
+ *  - Requiere variables de entorno:
+ *      NIMBLE_BASE          (p. ej. https://api.webit.live/api/v1/realtime/web)
+ *      NIMBLE_AUTH_HEADER   (p. ej. "Basic dXNlcm5hbWU6cGFzc3dvcmQ=")
+ *  - Health check:   ?health=1
+ *  - Probe amazon:   ?probe=amazon&q=perfume
+ *  - Probe shein:    ?probe=shein&q=perfume
+ *  - Mock demo:      ?q=perfume&mock=1
+ * ==========================================================
+ */
 
+// ---- CORS ----
 const ALLOWED_ORIGINS = new Set([
   "https://www.jboxly.com",
   "https://jboxly.com",
-  "https://jboxly.myshopify.com"
+  "https://jboxly.myshopify.com",
 ]);
+
+// ---- Cache simple en memoria (5 min) ----
+const cache = new Map();
+const TTL = 5 * 60 * 1000;
+
+// ---- Env para Realtime/Web ----
+const NIMBLE_BASE = process.env.NIMBLE_BASE;              // ej: https://api.webit.live/api/v1/realtime/web
+const NIMBLE_AUTH_HEADER = process.env.NIMBLE_AUTH_HEADER; // ej: "Basic xxxx"
 
 export default async function handler(req, res) {
   const origin = req.headers.origin || "";
@@ -19,21 +36,25 @@ export default async function handler(req, res) {
     "Access-Control-Allow-Origin": allow,
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400"
+    "Access-Control-Max-Age": "86400",
   };
   if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
 
   const { q = "", probe = "", health = "", mock = "" } = req.query;
   const query = String(q || "").trim();
 
-  // ---- Health: verifica que la KEY está en runtime ----
+  // ---- Health ----
   if (health) {
     res.writeHead(200, { ...cors, "content-type": "application/json" })
-       .end(JSON.stringify({ ok: true, hasKey: Boolean(KEY) }));
+       .end(JSON.stringify({
+         ok: true,
+         hasBase: Boolean(NIMBLE_BASE),
+         hasAuth: Boolean(NIMBLE_AUTH_HEADER)
+       }));
     return;
   }
 
-  // ---- Modo demo para probar el front YA ----
+  // ---- Mock demo para ver tarjetas ya en Shopify ----
   if (mock === "1") {
     const items = Array.from({ length: 8 }).map((_, i) => ({
       source: "mock",
@@ -54,7 +75,7 @@ export default async function handler(req, res) {
       if (probe === "amazon") {
         const html = await nimbleScrape(
           `https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`,
-          { render: true, country: "US" }
+          { render: true, country: "US", locale: "en" }
         );
         const out = inspectAmazon(html);
         res.writeHead(200, { ...cors, "content-type": "application/json" })
@@ -62,23 +83,34 @@ export default async function handler(req, res) {
         return;
       }
       if (probe === "shein") {
-        const html1 = await nimbleScrape(
-          `https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`,
-          { render: true }
-        );
-        const out1 = inspectShein(html1);
-        let out2 = {};
-        if (out1.count < 6) {
-          const html2 = await nimbleScrape(
-            `https://us.shein.com/search?keyword=${encodeURIComponent(query)}`,
+        // PSE
+        let html1 = "", html2 = "";
+        let out1 = { count: 0, sample: [] }, out2 = { count: 0, sample: [] };
+
+        try {
+          html1 = await nimbleScrape(
+            `https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`,
             { render: true }
           );
-          out2 = inspectShein(html2);
+          out1 = inspectShein(html1);
+        } catch(e){ out1 = { error: String(e?.message || e) }; }
+
+        // Fallback clásico si PSE trae poco
+        if (!out1.count || out1.count < 5) {
+          try {
+            html2 = await nimbleScrape(
+              `https://us.shein.com/search?keyword=${encodeURIComponent(query)}`,
+              { render: true }
+            );
+            out2 = inspectShein(html2);
+          } catch(e){ out2 = { error: String(e?.message || e) }; }
         }
+
         res.writeHead(200, { ...cors, "content-type": "application/json" })
            .end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
         return;
       }
+
       res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" }));
     } catch (e) {
       console.error("[JBOXLY][PROBE] error:", e?.message || e);
@@ -122,7 +154,7 @@ export default async function handler(req, res) {
 /* =================== AMAZON =================== */
 async function searchAmazon(q) {
   const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
-  const html = await nimbleScrape(url, { render: true, country: "US" });
+  const html = await nimbleScrape(url, { render: true, country: "US", locale: "en" });
   const $ = cheerio.load(html);
   const out = [];
 
@@ -145,6 +177,7 @@ async function searchAmazon(q) {
   console.log("[JBOXLY] amazon nodes:", out.length);
   return out.slice(0, 12);
 }
+
 function inspectAmazon(html){
   const $ = cheerio.load(html);
   const nodes = $('div.s-main-slot [data-component-type="s-search-result"]');
@@ -186,6 +219,7 @@ async function searchShein(q){
   console.log("[JBOXLY] shein total dedup:", out.length);
   return out;
 }
+
 function parseShein(html){
   const $ = cheerio.load(html);
   const items = [];
@@ -215,31 +249,27 @@ function parseShein(html){
   return items;
 }
 
-/* ============ Helper Nimble (residencial + rotación) ============ */
+/* ============ Nimble Realtime/Web (POST JSON) ============ */
 async function nimbleScrape(url, { render = true, country = "US", locale = "en" } = {}) {
-  const BASE = process.env.NIMBLE_BASE;            // ej: https://api.webit.live/api/v1/realtime/web
-  const AUTH = process.env.NIMBLE_AUTH_HEADER;     // ej: "Basic abc123..."
+  if (!NIMBLE_BASE) throw new Error("Falta NIMBLE_BASE");
+  if (!NIMBLE_AUTH_HEADER) throw new Error("Falta NIMBLE_AUTH_HEADER");
 
-  if (!BASE) throw new Error("Falta NIMBLE_BASE");
-  if (!AUTH) throw new Error("Falta NIMBLE_AUTH_HEADER");
-
-  // Log seguro (no imprime secretos)
-  console.log("[JBOXLY] REALTIME MODE ->", BASE, "auth=Basic?", AUTH.startsWith("Basic"));
+  console.log("[JBOXLY] REALTIME MODE ->", NIMBLE_BASE, "auth=Basic?", NIMBLE_AUTH_HEADER.startsWith("Basic"));
 
   const body = {
     parse: false,
     url,
-    format: "html",          // pedimos HTML crudo
+    format: "html",           // Pedimos HTML crudo para parsearlo con cheerio
     render: Boolean(render),
     country,
     locale
   };
 
-  const r = await fetch(BASE, {
+  const r = await fetch(NIMBLE_BASE, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": AUTH
+      "Authorization": NIMBLE_AUTH_HEADER
     },
     body: JSON.stringify(body)
   });
@@ -251,6 +281,7 @@ async function nimbleScrape(url, { render = true, country = "US", locale = "en" 
     throw new Error(`Realtime ${r.status}: ${text.slice(0,180)}`);
   }
 
+  // Algunos tenants devuelven {html:"..."}, otros {content:"..."}, y a veces HTML plano
   let data;
   try { data = JSON.parse(text); } catch { data = { html: text }; }
 

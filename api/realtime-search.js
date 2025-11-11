@@ -2,7 +2,7 @@
 import * as cheerio from "cheerio";
 
 export default async function handler(req, res) {
-  // CORS
+  // --- CORS ---
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,15 +15,31 @@ export default async function handler(req, res) {
   const NIMBLE_BASE = process.env.NIMBLE_BASE || "";
   const NIMBLE_AUTH = process.env.NIMBLE_AUTH_HEADER || "";
 
+  // --- Health ---
   if (HEALTH) {
     return res.status(200).json({ ok: true, hasBase: !!NIMBLE_BASE, hasAuth: !!NIMBLE_AUTH });
+  }
+
+  // --- DEMO INSTANTÁNEO (mock) ---
+  if (req.query.mock === "1") {
+    const kw = q || "demo";
+    const sources = ["amazon","shein"];
+    const items = Array.from({length: 12}).map((_, i) => ({
+      source: sources[i % sources.length],
+      title: `${kw} — Producto demo ${i + 1}`,
+      price: (19.99 + i).toFixed(2),
+      currency: "USD",
+      image: "https://via.placeholder.com/600x450?text=JBOXLY",
+      url: "https://example.com"
+    }));
+    return res.status(200).json({ ok: true, mock: true, count: items.length, items });
   }
 
   if (!NIMBLE_BASE || !NIMBLE_AUTH) {
     return res.status(500).json({ ok: false, error: "Nimble not configured" });
   }
 
-  // ---------- PROBES ----------
+  // -------- PROBES útiles --------
   if (probe === "echo") {
     try {
       const html = await nimbleFetch("https://example.com/", { render: true });
@@ -32,27 +48,35 @@ export default async function handler(req, res) {
       return res.status(502).json({ ok: false, source: "echo", error: String(e?.message || e) });
     }
   }
+
   if (probe === "amazon") {
     if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
     try {
       const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
-      const html = await nimbleFetch(url, { render: true, country: "US", locale: "en" });
-      const items = parseAmazon(html);
+      // Amazon MÁS ESTABLE: sin render
+      const html = await nimbleFetch(url, { render: false, country: "US", locale: "en" });
+      let items = parseAmazon(html);
+      if (items.length === 0) {
+        // reintento con render por si tocó layout raro
+        const html2 = await nimbleFetch(url, { render: true, country: "US", locale: "en" });
+        items = parseAmazon(html2);
+      }
       return res.status(200).json({ ok: true, source: "amazon", target: url, count: items.length, items });
     } catch (e) {
       return res.status(504).json({ ok: false, source: "amazon", error: String(e?.message || e) });
     }
   }
+
   if (probe === "shein") {
     if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
     try {
-      // PSE
       let list = [];
+      // PSE (render true)
       try {
         const html1 = await nimbleFetch(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
         list = list.concat(parseShein(html1));
       } catch {}
-      // Fallback clásico
+      // clásico si poco/timeout
       if (list.length < 6) {
         try {
           const html2 = await nimbleFetch(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
@@ -73,12 +97,12 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---------- ENDPOINT NORMAL ----------
+  // -------- ENDPOINT NORMAL: mezcla Amazon + Shein --------
   if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
   try {
     const urlA = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
     const [htmlA, htmlS] = await Promise.allSettled([
-      nimbleFetch(urlA, { render: true, country: "US", locale: "en" }),
+      nimbleFetch(urlA, { render: false, country: "US", locale: "en" }), // Amazon sin render = más estable
       nimbleFetch(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true })
     ]);
 
@@ -86,7 +110,7 @@ export default async function handler(req, res) {
     if (htmlA.status === "fulfilled") items = items.concat(parseAmazon(htmlA.value));
     if (htmlS.status === "fulfilled") items = items.concat(parseShein(htmlS.value));
 
-    // Fallback Shein clásico si sigue bajo
+    // Fallback SHEIN clásico si sigue bajo
     if (items.filter(x=>x.source==="shein").length < 6) {
       try {
         const html2 = await nimbleFetch(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
@@ -94,7 +118,7 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    // dedup
+    // dedup + top 24
     const seen = new Set(), out = [];
     for (const it of items) {
       const k = it.url || it.title;
@@ -102,7 +126,6 @@ export default async function handler(req, res) {
       seen.add(k); out.push(it);
       if (out.length >= 24) break;
     }
-
     return res.status(200).json({ ok: true, count: out.length, items: out });
   } catch (e) {
     return res.status(504).json({ ok: false, error: "Upstream timeout or error" });
@@ -115,10 +138,9 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
   const BASE = process.env.NIMBLE_BASE;
   const AUTH = process.env.NIMBLE_AUTH_HEADER;
 
-  // Timeout 25s + reintentos con backoff
   const once = async () => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25000);
+    const timer = setTimeout(() => controller.abort(), 35000); // 35s
     try {
       const r = await fetch(BASE, {
         method: "POST",
@@ -142,7 +164,7 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
       let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
       const html = typeof data === "string" ? data : (data.html || data.content || "");
       if (!html || html.length < 400) throw new Error("Empty HTML");
-      console.log("[JBOXLY] fetched OK len:", html.length, "url:", url.slice(0,120));
+      console.log("[JBOXLY] fetched OK len:", html.length, "url:", url.slice(0,120), "render:", render);
       return html;
     } catch (e) {
       clearTimeout(timer);
@@ -153,12 +175,12 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
 
   let attempt = 0;
   let last;
-  while (attempt < 2) {
+  while (attempt < 3) { // 3 intentos con backoff
     try {
       return await once();
     } catch (e) {
       last = e;
-      const backoff = 800 * Math.pow(2, attempt); // 800ms, 1600ms
+      const backoff = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
       await new Promise(r => setTimeout(r, backoff));
       attempt++;
     }
@@ -167,12 +189,13 @@ async function nimbleFetch(url, { render = true, country = "US", locale = "en" }
 }
 
 /* ======================== Parsers ======================== */
-// AMAZON — robusto con fallback genérico
+
+// AMAZON — selectores + ld+json + fallback /dp/
 function parseAmazon(html) {
   const $ = cheerio.load(html);
   const out = [];
 
-  // 1) Variante principal (slot + data-asin)
+  // Variante principal
   $("div.s-main-slot div.s-result-item[data-asin]").each((_, el) => {
     const $el = $(el);
     const asin = $el.attr("data-asin");
@@ -192,7 +215,7 @@ function parseAmazon(html) {
     if (title && href) out.push({ source: "amazon", title, url: href, image: img, price, currency, asin });
   });
 
-  // 2) Variante secundaria (tarjeta compacta)
+  // Variante secundaria
   if (out.length === 0) {
     $("div.s-card-container, div.s-result-card").each((_, el) => {
       const $el = $(el);
@@ -211,7 +234,7 @@ function parseAmazon(html) {
     });
   }
 
-  // 3) Fallback desde JSON embebido (ld+json)
+  // Fallback desde ld+json
   if (out.length === 0) {
     const scripts = $("script[type='application/ld+json']").map((_, el) => $(el).html() || "").get();
     for (const s of scripts) {
@@ -232,27 +255,23 @@ function parseAmazon(html) {
     }
   }
 
-  // 4) **Fallback GENÉRICO** — “caza” enlaces /dp/
+  // Fallback genérico /dp/
   if (out.length === 0) {
     const seen = new Set();
     $("a[href*='/dp/']").each((_, a) => {
       let href = $(a).attr("href") || "";
       if (!href) return;
       if (href.startsWith("/")) href = "https://www.amazon.com" + href;
-      if (!href.includes("/dp/")) return; // seguridad
+      if (!href.includes("/dp/")) return;
       if (seen.has(href)) return;
       seen.add(href);
 
       const title = ($(a).text() || "").trim();
       if (!title) return;
 
-      // Busca imagen cerca (padre/abuelo)
       let $box = $(a).closest("div");
       let img = $box.find("img").attr("src") || "";
-      if (!img) img = $("img").filter((i, el) => $(el).closest("a")[0] === a).attr("src") || "";
-
-      // Extrae precio por regex en texto cercano
-      const nearText = $box.text() || "";
+      const nearText = ($box.text() || "");
       const m = nearText.match(/\$[0-9]+(?:\.[0-9]{2})?/);
       const price = m ? m[0] : "";
       const currency = price ? "$" : "";
@@ -264,15 +283,13 @@ function parseAmazon(html) {
   return out.slice(0, 24);
 }
 
-// SHEIN — robusto con fallback genérico
+// SHEIN — JSON (goods_list) + DOM + fallback /item/
 function parseShein(html) {
   const $ = cheerio.load(html);
   const out = [];
 
-  // 1) JSON embebido (goods_list/goodsList)
   const jsonArr = extractJSONArray(html, /"goods_list"\s*:\s*(\[[\s\S]*?\])/)
                || extractJSONArray(html, /"goodsList"\s*:\s*(\[[\s\S]*?\])/);
-
   if (Array.isArray(jsonArr)) {
     for (const g of jsonArr) {
       const title = (g.goods_name || g.goodsName || "").toString().trim();
@@ -286,7 +303,6 @@ function parseShein(html) {
     }
   }
 
-  // 2) DOM (varias clases conocidas)
   if (out.length === 0) {
     $(".S-product-item, .product-card, .c-product-card").each((_, el) => {
       const $el = $(el);
@@ -302,7 +318,6 @@ function parseShein(html) {
     });
   }
 
-  // 3) **Fallback GENÉRICO** — enlaces /item/
   if (out.length === 0) {
     const seen = new Set();
     $("a[href*='/item/']").each((_, a) => {
@@ -329,4 +344,25 @@ function parseShein(html) {
   }
 
   return out.slice(0, 24);
+}
+
+/* ============== JSON array extractor helpers ============== */
+function extractJSONArray(html, regex) {
+  try {
+    const m = html.match(regex);
+    if (!m) return null;
+    const raw = balanceBrackets(m[1]);
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : null;
+  } catch { return null; }
+}
+function balanceBrackets(str) {
+  let open = 0, out = "";
+  for (const ch of str) {
+    if (ch === "[") open++;
+    if (ch === "]") open--;
+    out += ch;
+    if (open === 0) break;
+  }
+  return out;
 }

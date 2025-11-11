@@ -2,7 +2,7 @@ import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 
 const cache = new Map();
-const TTL = 5 * 60 * 1000; // 5 min
+const TTL = 5 * 60 * 1000;
 const NIMBLE = "https://api.nimbleway.com/scrape";
 const KEY = process.env.NIMBLEWAY_KEY;
 
@@ -23,9 +23,36 @@ export default async function handler(req, res) {
   };
   if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
 
+  const { q = "", probe = "" } = req.query;
+  const query = String(q || "").trim();
+
   try {
-    const { q = "" } = req.query;
-    const query = String(q || "").trim();
+    // ── PROBES: endpoints de depuración ─────────────────────────────
+    if (probe) {
+      if (!query) { res.writeHead(200, cors).end(JSON.stringify({ ok: true, note: "faltó q" })); return; }
+      if (probe === "amazon") {
+        const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
+        const out = inspectAmazon(html);
+        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
+        return;
+      }
+      if (probe === "shein") {
+        const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
+        const out1 = inspectShein(html1);
+        let html2 = "", out2 = {};
+        if (out1.count < 6) {
+          html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
+          out2 = inspectShein(html2);
+        }
+        res.writeHead(200, { ...cors, "content-type": "application/json" })
+           .end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
+        return;
+      }
+      res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" }));
+      return;
+    }
+    // ────────────────────────────────────────────────────────────────
+
     if (!query) { res.writeHead(200, cors).end(JSON.stringify({ items: [] })); return; }
 
     const key = `search:${query.toLowerCase()}`;
@@ -33,15 +60,11 @@ export default async function handler(req, res) {
     const hit = cache.get(key);
     if (hit && now - hit.t < TTL) { res.writeHead(200, cors).end(JSON.stringify(hit.data)); return; }
 
-    const [amazon, shein] = await Promise.allSettled([
-      searchAmazon(query),
-      searchShein(query)
-    ]);
-
+    const [amazon, shein] = await Promise.allSettled([searchAmazon(query), searchShein(query)]);
     const a = amazon.status === "fulfilled" ? amazon.value : [];
     const s = shein.status === "fulfilled" ? shein.value : [];
-    console.log(`[JBOXLY] q="${query}" -> amazon:${a.length} shein:${s.length}`);
 
+    console.log(`[JBOXLY] q="${query}" -> amazon:${a.length} shein:${s.length}`);
     const items = [...a, ...s].slice(0, 24);
     const payload = { items };
     cache.set(key, { t: now, data: payload });
@@ -52,72 +75,68 @@ export default async function handler(req, res) {
   }
 }
 
-/* ---------- AMAZON (más robusto) ---------- */
+/* ─────────────────── AMAZON ─────────────────── */
 async function searchAmazon(q){
-  // usar render=true para que aparezcan más tarjetas
   const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
   const html = await nimbleScrape(url, { render: true, country: "US" });
   const $ = cheerio.load(html);
-  const items = [];
-
+  const out = [];
   $('div.s-main-slot [data-component-type="s-search-result"]').each((_, el) => {
     const title = $(el).find("h2 a span").text().trim();
     let href = $(el).find("h2 a").attr("href") || "";
     if (href && !href.startsWith("http")) href = "https://www.amazon.com" + href;
 
-    // distintos layouts de precio
-    let price = "";
-    const p1 = $(el).find(".a-price .a-offscreen").first().text().trim();
-    const pWhole = $(el).find(".a-price-whole").first().text().replace(/[^\d]/g, "");
-    const pFrac  = $(el).find(".a-price-fraction").first().text().replace(/[^\d]/g, "");
-    if (p1) price = p1.replace(/[^\d.,]/g,"");
-    else if (pWhole) price = `${pWhole}.${pFrac || "00"}`;
+    let price = $(el).find(".a-price .a-offscreen").first().text().trim();
+    if (!price) {
+      const pWhole = $(el).find(".a-price-whole").first().text().replace(/[^\d]/g, "");
+      const pFrac  = $(el).find(".a-price-fraction").first().text().replace(/[^\d]/g, "");
+      if (pWhole) price = `${pWhole}.${pFrac || "00"}`;
+    }
 
     const img = $(el).find("img.s-image").attr("src");
-    if (title && href) items.push({ source: "amazon", title, price, currency: "USD", image: img, url: href });
+    if (title && href) out.push({ source: "amazon", title, price, currency: "USD", image: img, url: href });
   });
-
-  return items.slice(0, 12);
+  return out.slice(0, 12);
+}
+function inspectAmazon(html){
+  const $ = cheerio.load(html);
+  const nodes = $('div.s-main-slot [data-component-type="s-search-result"]');
+  const sample = [];
+  nodes.slice(0,3).each((_,el)=>{
+    sample.push( $(el).find("h2 a span").text().trim().slice(0,80) );
+  });
+  return { count: nodes.length, sample };
 }
 
-/* ---------- SHEIN (dos rutas + más selectores) ---------- */
+/* ─────────────────── SHEIN ─────────────────── */
 async function searchShein(q){
-  const items = [];
+  const list = [];
 
-  // Ruta 1: pse (render=true)
   try {
-    const url1 = `https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`;
-    const html1 = await nimbleScrape(url1, { render: true });
-    items.push(...parseShein(html1));
-  } catch(e){ console.warn("[JBOXLY] SHEIN pse fail", e?.message); }
+    const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
+    list.push(...parseShein(html1));
+  } catch(e){ console.warn("[JBOXLY] shein pse fail", e?.message); }
 
-  // Ruta 2: búsqueda clásica (algunas keywords solo aparecen aquí)
-  if (items.length < 8) {
+  if (list.length < 8) {
     try {
-      const url2 = `https://us.shein.com/search?keyword=${encodeURIComponent(q)}`;
-      const html2 = await nimbleScrape(url2, { render: true });
-      items.push(...parseShein(html2));
-    } catch(e){ console.warn("[JBOXLY] SHEIN classic fail", e?.message); }
+      const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
+      list.push(...parseShein(html2));
+    } catch(e){ console.warn("[JBOXLY] shein classic fail", e?.message); }
   }
 
   // dedup
-  const seen = new Set();
-  const out = [];
-  for (const it of items) {
+  const seen = new Set(), out = [];
+  for (const it of list) {
     const k = it.url || it.title;
     if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(it);
+    seen.add(k); out.push(it);
     if (out.length >= 12) break;
   }
   return out;
 }
-
 function parseShein(html){
   const $ = cheerio.load(html);
   const items = [];
-
-  // Intento 1: cards nuevas
   $("[data-test='product-card'], .S-product-item, .product-card").each((_, el) => {
     const title = $(el).find(".S-product-item__name, .product-title, .S-product-item__info a").first().text().trim();
     const price = $(el).find(".S-product-item__price, .price, .original, .sale-price").first().text().trim();
@@ -127,8 +146,7 @@ function parseShein(html){
     if (img && img.startsWith("//")) img = "https:" + img;
     if (title && href) items.push({ source: "shein", title, price, currency: "USD", image: img, url: href });
   });
-
-  // Intento 2: rejillas antiguas
+  // fallback viejo
   if (items.length === 0) {
     $(".c-product-card, .j-expose__product-item").each((_, el) => {
       const title = $(el).find(".c-product-card__name, .goods-title, a[title]").first().text().trim();
@@ -140,11 +158,10 @@ function parseShein(html){
       if (title && href) items.push({ source: "shein", title, price, currency: "USD", image: img, url: href });
     });
   }
-
   return items;
 }
 
-/* ---------- Helper Nimbleway ---------- */
+/* ─────────────────── Helper Nimble ─────────────────── */
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
   const u = `${NIMBLE}?url=${encodeURIComponent(url)}&render=${String(render)}&country=${country}`;

@@ -1,0 +1,5 @@
+{
+  "version": 2,
+  "builds": [{ "src": "api/**/*.js", "use": "@vercel/node" }],
+  "routes": [{ "src": "/realtime-search", "dest": "/api/realtime-search.js" }]
+}

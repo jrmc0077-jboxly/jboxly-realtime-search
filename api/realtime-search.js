@@ -216,59 +216,53 @@ function parseShein(html){
 }
 
 /* ============ Helper Nimble (residencial + rotación) ============ */
-async function nimbleScrape(url, { render = false, country = "US" } = {}) {
-  if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
+async function nimbleScrape(url, { render = true, country = "US", locale = "en" } = {}) {
+  const BASE = process.env.NIMBLE_BASE;            // ej: https://api.webit.live/api/v1/realtime/web
+  const AUTH = process.env.NIMBLE_AUTH_HEADER;     // ej: "Basic abc123..."
 
-  // Preferir configuración explícita (desde tu Playground)
-  const CFG_BASE  = process.env.NIMBLE_BASE || "";
-  const CFG_AUTH  = (process.env.NIMBLE_AUTH || "").toLowerCase(); // "bearer" | "xkey"
+  if (!BASE) throw new Error("Falta NIMBLE_BASE");
+  if (!AUTH) throw new Error("Falta NIMBLE_AUTH_HEADER");
 
-  // Fallbacks automáticos (por si no pones variables)
-  const BASES = CFG_BASE
-    ? [CFG_BASE]  // si definiste NIMBLE_BASE, probamos solo ese primero
-    : [
-        "https://api.nimbleway.com/scrape",
-        "https://api.nimbleway.com/api/v1/scrape",
-        "https://api.webit.live/scrape",
-        "https://api.webit.live/api/v1/scrape"
-      ];
+  // Log seguro (no imprime secretos)
+  console.log("[JBOXLY] REALTIME MODE ->", BASE, "auth=Basic?", AUTH.startsWith("Basic"));
 
-  const AUTH_STYLES = CFG_AUTH
-    ? [CFG_AUTH]   // "bearer" o "xkey"
-    : ["bearer","xkey"];
-
-  const makeHeaders = (style) =>
-    style === "bearer"
-      ? { Authorization: `Bearer ${KEY}` }
-      : { "x-api-key": KEY };
-
-  // Parámetros típicos (ajusta si tu Playground muestra otros)
-  const q = new URLSearchParams({
+  const body = {
+    parse: false,
     url,
-    render: String(render),
+    format: "html",          // pedimos HTML crudo
+    render: Boolean(render),
     country,
-    proxy_type: "residential",
-    rotate: "true"
-  }).toString();
+    locale
+  };
 
-  let lastErr = null;
-  for (const base of BASES) {
-    for (const style of AUTH_STYLES) {
-      try {
-        const endpoint = base.includes("?") ? `${base}&${q}` : `${base}?${q}`;
-        const r = await fetch(endpoint, { headers: makeHeaders(style) });
-        const text = await r.text();
-        let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
+  const r = await fetch(BASE, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": AUTH
+    },
+    body: JSON.stringify(body)
+  });
 
-        if (!r.ok) { lastErr = new Error(`Nimbleway ${r.status} via ${base} (${style}) ${data?.error || ""}`); continue; }
+  const text = await r.text();
 
-        const html = data.html || data.content || "";
-        if (!html || html.length < 400) { lastErr = new Error(`Empty HTML via ${base} (${style})`); continue; }
-
-        console.log("[JBOXLY] fetched OK:", base, `(${style})`, "len:", html.length);
-        return html;
-      } catch (e) { lastErr = e; }
-    }
+  if (!r.ok) {
+    console.error("[JBOXLY][NIMBLE_ERR]", r.status, text.slice(0, 300));
+    throw new Error(`Realtime ${r.status}: ${text.slice(0,180)}`);
   }
-  throw lastErr || new Error("Nimbleway: no working endpoint/auth");
+
+  let data;
+  try { data = JSON.parse(text); } catch { data = { html: text }; }
+
+  const html =
+    typeof data === "string" ? data :
+    data.html || data.content || "";
+
+  if (!html || html.length < 400) {
+    console.warn("[JBOXLY] Realtime HTML corto. len=", (html||"").length, "rawHead=", text.slice(0,120));
+    throw new Error("Realtime devolvió HTML vacío o muy corto");
+  }
+
+  console.log("[JBOXLY] fetched OK (realtime/web) len:", html.length);
+  return html;
 }

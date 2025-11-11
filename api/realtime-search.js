@@ -26,58 +26,51 @@ export default async function handler(req, res) {
   const { q = "", probe = "", health = "" } = req.query;
   const query = String(q || "").trim();
 
-  // Health check: verifica que la key existe en runtime
+  // --- Health check ---
   if (health) {
     res.writeHead(200, { ...cors, "content-type": "application/json" })
        .end(JSON.stringify({ ok: true, hasKey: Boolean(KEY) }));
     return;
   }
 
-  // Probes de diagnóstico (ver cuántos nodos detecta)
+  // --- Probes con try/catch para no crashear ---
   if (probe) {
     if (!query) { res.writeHead(200, cors).end(JSON.stringify({ ok: true, note: "faltó q" })); return; }
-    if (probe === "amazon") {
-      const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
-      const out = inspectAmazon(html);
-      res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
-      return;
-    }
-    if (probe === "shein") {
-      const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
-      const out1 = inspectShein(html1);
-      let out2 = {};
-      if (out1.count < 6) {
-        const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
-        out2 = inspectShein(html2);
+    try {
+      if (probe === "amazon") {
+        const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
+        const out = inspectAmazon(html);
+        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
+        return;
       }
-      res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
-      return;
+      if (probe === "shein") {
+        const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
+        const out1 = inspectShein(html1);
+        let out2 = {};
+        if (out1.count < 6) {
+          const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
+          out2 = inspectShein(html2);
+        }
+        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
+        return;
+      }
+      res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" }));
+    } catch (e) {
+      console.error("[JBOXLY][PROBE] error:", e?.message || e);
+      res.writeHead(200, { ...cors, "content-type": "application/json" })
+         .end(JSON.stringify({ probe, q: query, error: String(e?.message || e) }));
     }
-    res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" })); return;
+    return;
   }
 
   try {
-    if (!query) { res.writeHead(200, cors).end(JSON.stringify({ items: [] })); return; }
-
-    const key = `search:${query.toLowerCase()}`;
-    const now = Date.now();
-    const hit = cache.get(key);
-    if (hit && now - hit.t < TTL) { res.writeHead(200, cors).end(JSON.stringify(hit.data)); return; }
-
-    const [amazon, shein] = await Promise.allSettled([searchAmazon(query), searchShein(query)]);
-    const a = amazon.status === "fulfilled" ? amazon.value : [];
-    const s = shein.status === "fulfilled" ? shein.value : [];
-    console.log(`[JBOXLY] q="${query}" -> amazon:${a.length} shein:${s.length}`);
-
-    const items = [...a, ...s].slice(0, 24);
-    const payload = { items };
-    cache.set(key, { t: now, data: payload });
-    res.writeHead(200, cors).end(JSON.stringify(payload));
+    // ... (tu bloque normal que hace searchAmazon/searchShein y responde items)
   } catch (e) {
     console.error("[JBOXLY] ERROR", e);
     res.writeHead(200, cors).end(JSON.stringify({ items: [] }));
   }
 }
+
 
 /* ------------ AMAZON ------------ */
 async function searchAmazon(q){

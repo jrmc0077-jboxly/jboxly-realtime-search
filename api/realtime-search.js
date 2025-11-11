@@ -23,36 +23,40 @@ export default async function handler(req, res) {
   };
   if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
 
-  const { q = "", probe = "" } = req.query;
+  const { q = "", probe = "", health = "" } = req.query;
   const query = String(q || "").trim();
 
-  try {
-    // ── PROBES: endpoints de depuración ─────────────────────────────
-    if (probe) {
-      if (!query) { res.writeHead(200, cors).end(JSON.stringify({ ok: true, note: "faltó q" })); return; }
-      if (probe === "amazon") {
-        const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
-        const out = inspectAmazon(html);
-        res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
-        return;
-      }
-      if (probe === "shein") {
-        const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
-        const out1 = inspectShein(html1);
-        let html2 = "", out2 = {};
-        if (out1.count < 6) {
-          html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
-          out2 = inspectShein(html2);
-        }
-        res.writeHead(200, { ...cors, "content-type": "application/json" })
-           .end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
-        return;
-      }
-      res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" }));
+  // Health check: verifica que la key existe en runtime
+  if (health) {
+    res.writeHead(200, { ...cors, "content-type": "application/json" })
+       .end(JSON.stringify({ ok: true, hasKey: Boolean(KEY) }));
+    return;
+  }
+
+  // Probes de diagnóstico (ver cuántos nodos detecta)
+  if (probe) {
+    if (!query) { res.writeHead(200, cors).end(JSON.stringify({ ok: true, note: "faltó q" })); return; }
+    if (probe === "amazon") {
+      const html = await nimbleScrape(`https://www.amazon.com/s?k=${encodeURIComponent(query)}&ref=nb_sb_noss`, { render: true, country: "US" });
+      const out = inspectAmazon(html);
+      res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, ...out }));
       return;
     }
-    // ────────────────────────────────────────────────────────────────
+    if (probe === "shein") {
+      const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(query)}`, { render: true });
+      const out1 = inspectShein(html1);
+      let out2 = {};
+      if (out1.count < 6) {
+        const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(query)}`, { render: true });
+        out2 = inspectShein(html2);
+      }
+      res.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ probe, q: query, pse: out1, classic: out2 }));
+      return;
+    }
+    res.writeHead(400, cors).end(JSON.stringify({ error: "probe inválido" })); return;
+  }
 
+  try {
     if (!query) { res.writeHead(200, cors).end(JSON.stringify({ items: [] })); return; }
 
     const key = `search:${query.toLowerCase()}`;
@@ -63,8 +67,8 @@ export default async function handler(req, res) {
     const [amazon, shein] = await Promise.allSettled([searchAmazon(query), searchShein(query)]);
     const a = amazon.status === "fulfilled" ? amazon.value : [];
     const s = shein.status === "fulfilled" ? shein.value : [];
-
     console.log(`[JBOXLY] q="${query}" -> amazon:${a.length} shein:${s.length}`);
+
     const items = [...a, ...s].slice(0, 24);
     const payload = { items };
     cache.set(key, { t: now, data: payload });
@@ -75,7 +79,7 @@ export default async function handler(req, res) {
   }
 }
 
-/* ─────────────────── AMAZON ─────────────────── */
+/* ------------ AMAZON ------------ */
 async function searchAmazon(q){
   const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}&ref=nb_sb_noss`;
   const html = await nimbleScrape(url, { render: true, country: "US" });
@@ -88,11 +92,10 @@ async function searchAmazon(q){
 
     let price = $(el).find(".a-price .a-offscreen").first().text().trim();
     if (!price) {
-      const pWhole = $(el).find(".a-price-whole").first().text().replace(/[^\d]/g, "");
-      const pFrac  = $(el).find(".a-price-fraction").first().text().replace(/[^\d]/g, "");
-      if (pWhole) price = `${pWhole}.${pFrac || "00"}`;
+      const pW = $(el).find(".a-price-whole").first().text().replace(/[^\d]/g, "");
+      const pF = $(el).find(".a-price-fraction").first().text().replace(/[^\d]/g, "");
+      if (pW) price = `${pW}.${pF || "00"}`;
     }
-
     const img = $(el).find("img.s-image").attr("src");
     if (title && href) out.push({ source: "amazon", title, price, currency: "USD", image: img, url: href });
   });
@@ -102,29 +105,23 @@ function inspectAmazon(html){
   const $ = cheerio.load(html);
   const nodes = $('div.s-main-slot [data-component-type="s-search-result"]');
   const sample = [];
-  nodes.slice(0,3).each((_,el)=>{
-    sample.push( $(el).find("h2 a span").text().trim().slice(0,80) );
-  });
+  nodes.slice(0,3).each((_,el)=> sample.push( $(el).find("h2 a span").text().trim().slice(0,80) ));
   return { count: nodes.length, sample };
 }
 
-/* ─────────────────── SHEIN ─────────────────── */
+/* ------------ SHEIN ------------ */
 async function searchShein(q){
   const list = [];
-
   try {
     const html1 = await nimbleScrape(`https://us.shein.com/pse?keyword=${encodeURIComponent(q)}`, { render: true });
     list.push(...parseShein(html1));
   } catch(e){ console.warn("[JBOXLY] shein pse fail", e?.message); }
-
   if (list.length < 8) {
     try {
       const html2 = await nimbleScrape(`https://us.shein.com/search?keyword=${encodeURIComponent(q)}`, { render: true });
       list.push(...parseShein(html2));
     } catch(e){ console.warn("[JBOXLY] shein classic fail", e?.message); }
   }
-
-  // dedup
   const seen = new Set(), out = [];
   for (const it of list) {
     const k = it.url || it.title;
@@ -146,7 +143,6 @@ function parseShein(html){
     if (img && img.startsWith("//")) img = "https:" + img;
     if (title && href) items.push({ source: "shein", title, price, currency: "USD", image: img, url: href });
   });
-  // fallback viejo
   if (items.length === 0) {
     $(".c-product-card, .j-expose__product-item").each((_, el) => {
       const title = $(el).find(".c-product-card__name, .goods-title, a[title]").first().text().trim();
@@ -161,12 +157,19 @@ function parseShein(html){
   return items;
 }
 
-/* ─────────────────── Helper Nimble ─────────────────── */
+/* ------------ Helper Nimble (residencial + rotación) ------------ */
 async function nimbleScrape(url, { render = false, country = "US" } = {}) {
   if (!KEY) throw new Error("Falta NIMBLEWAY_KEY");
-  const u = `${NIMBLE}?url=${encodeURIComponent(url)}&render=${String(render)}&country=${country}`;
-  const r = await fetch(u, { headers: { Authorization: `Bearer ${KEY}` } });
-  if (!r.ok) throw new Error(`Nimbleway error ${r.status}`);
-  const data = await r.json().catch(() => ({}));
+  const params = new URLSearchParams({
+    url,
+    render: String(render),
+    country,
+    proxy_type: "residential",
+    rotate: "true"
+  });
+  const r = await fetch(`${NIMBLE}?${params}`, { headers: { Authorization: `Bearer ${KEY}` } });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = { html: text }; }
+  if (!r.ok) throw new Error(`Nimbleway error ${r.status} ${data?.error || ""}`);
   return data.html || data.content || "";
 }

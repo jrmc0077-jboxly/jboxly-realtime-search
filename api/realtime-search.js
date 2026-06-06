@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   });
 
   if (asin) params.append('asin', asin);
-  if (q) params.append('search_term', q);
+  if (q) params.append('keyword', q);
 
   try {
     const response = await fetch(`https://realtime.easyparser.com/v1/request?${params}`);

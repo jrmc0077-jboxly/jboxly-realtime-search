@@ -30,8 +30,8 @@ export default async function handler(req, res) {
     let serpUrl = '';
     if (tienda === 'ebay') {
       serpUrl = asin
-        ? `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`
-        : `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
+        ? `https://serpapi.com/search?engine=ebay_product&item_id=${asin}&api_key=${serpKey}`
+        : `https://serpapi.com/search?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
     }
     if (tienda === 'walmart') {
       serpUrl = asin

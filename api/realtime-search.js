@@ -47,7 +47,7 @@ export default async function handler(req, res) {
       const data = JSON.parse(result.body);
       return res.status(200).json({ ok: true, data, fuente: tienda });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: err.message });
+      return res.status(500).json({ ok: false, error: String(err), stack: err.stack, url: serpUrl });
     }
   }
 

@@ -11,18 +11,16 @@ export default async function handler(req, res) {
     return res.status(400).json({ ok: false, error: 'Falta asin o q' });
   }
 
-  // EBAY y WALMART via ScrapingDog
   if (tienda === 'ebay' || tienda === 'walmart') {
     try {
       const serpKey = process.env.SERPAPI_KEY;
       let serpUrl = '';
 
       if (tienda === 'ebay') {
-        const serpKey = process.env.SERPAPI_KEY;
         if (asin) {
-          sdUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
+          serpUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
         } else {
-          sdUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&api_key=${serpKey}`;
+          serpUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
         }
       }
 
@@ -38,11 +36,10 @@ export default async function handler(req, res) {
       const data = await response.json();
       return res.status(200).json({ ok: true, data, fuente: tienda });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: 'Error al consultar SerpAPI' });
+      return res.status(500).json({ ok: false, error: 'Error al consultar SerpAPI', detalle: err.message });
     }
   }
 
-  // AMAZON via Easyparser (default)
   const params = new URLSearchParams({
     api_key: process.env.EASYPARSER_API_KEY,
     platform: 'AMZ',

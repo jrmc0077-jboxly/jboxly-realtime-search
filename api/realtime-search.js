@@ -14,30 +14,30 @@ export default async function handler(req, res) {
   // EBAY y WALMART via ScrapingDog
   if (tienda === 'ebay' || tienda === 'walmart') {
     try {
-      const sdKey = process.env.SCRAPINGDOG_API_KEY;
-      let sdUrl = '';
+      const serpKey = process.env.SERPAPI_KEY;
+      let serpUrl = '';
 
       if (tienda === 'ebay') {
-  if (asin) {
-    sdUrl = `https://api.scrapingdog.com/ebay/product?api_key=${sdKey}&url=https://www.ebay.com/itm/${asin}`;
-  } else {
-    sdUrl = `https://api.scrapingdog.com/ebay/search?api_key=${sdKey}&url=https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`;
-  }
-}
-
-      if (tienda === 'walmart') {
         if (asin) {
-          sdUrl = `https://api.scrapingdog.com/walmart/product?api_key=${sdKey}&itemId=${asin}`;
+          serpUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
         } else {
-          sdUrl = `https://api.scrapingdog.com/walmart?api_key=${sdKey}&searchQuery=${encodeURIComponent(q)}&page=${page || 1}`;
+          serpUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
         }
       }
 
-      const response = await fetch(sdUrl);
+      if (tienda === 'walmart') {
+        if (asin) {
+          serpUrl = `https://serpapi.com/search.json?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`;
+        } else {
+          serpUrl = `https://serpapi.com/search.json?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
+        }
+      }
+
+      const response = await fetch(serpUrl);
       const data = await response.json();
       return res.status(200).json({ ok: true, data, fuente: tienda });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: 'Error al consultar ScrapingDog' });
+      return res.status(500).json({ ok: false, error: 'Error al consultar SerpAPI' });
     }
   }
 

@@ -23,7 +23,7 @@ module.exports = async function handler(req, res) {
     let params = {};
     if (tienda === 'ebay') {
       params = asin
-        ? { engine: 'ebay_product', item_id: asin }
+        ? { engine: 'ebay_product', product_id: asin }
         : { engine: 'ebay', _nkw: q, _pgn: page || 1 };
     }
     if (tienda === 'walmart') {

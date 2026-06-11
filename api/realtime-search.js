@@ -18,10 +18,11 @@ export default async function handler(req, res) {
       let serpUrl = '';
 
       if (tienda === 'ebay') {
+        const serpKey = process.env.SERPAPI_KEY;
         if (asin) {
-          serpUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
+          sdUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
         } else {
-          serpUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
+          sdUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&api_key=${serpKey}`;
         }
       }
 

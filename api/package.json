@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
-    "node-fetch": "^2.6.9"
+    "node-fetch": "^2.6.9",
+    "google-search-results-nodejs": "^2.0.1"
   }
 }

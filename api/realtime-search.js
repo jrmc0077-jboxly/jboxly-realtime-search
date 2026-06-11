@@ -1,16 +1,6 @@
-import https from 'https';
+const fetch = require('node-fetch');
 
-function httpGet(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    }).on('error', reject);
-  });
-}
-
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -35,19 +25,16 @@ export default async function handler(req, res) {
     }
     if (tienda === 'walmart') {
       serpUrl = asin
-        ? `https://serpapi.com/search.json?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`
-        : `https://serpapi.com/search.json?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
+        ? `https://serpapi.com/search?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`
+        : `https://serpapi.com/search?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
     }
 
     try {
-      const result = await httpGet(serpUrl);
-      if (result.status !== 200) {
-        return res.status(500).json({ ok: false, error: 'SerpAPI error', status: result.status, body: result.body.substring(0, 300) });
-      }
-      const data = JSON.parse(result.body);
+      const response = await fetch(serpUrl);
+      const data = await response.json();
       return res.status(200).json({ ok: true, data, fuente: tienda });
     } catch (err) {
-      return res.status(500).json({ ok: false, error: String(err), stack: err.stack, url: serpUrl });
+      return res.status(500).json({ ok: false, error: err.message });
     }
   }
 
@@ -62,10 +49,10 @@ export default async function handler(req, res) {
   if (page) params.append('page', page);
 
   try {
-    const result = await httpGet(`https://realtime.easyparser.com/v1/request?${params}`);
-    const data = JSON.parse(result.body);
+    const response = await fetch(`https://realtime.easyparser.com/v1/request?${params}`);
+    const data = await response.json();
     return res.status(200).json({ ok: true, data });
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Error al consultar Easyparser' });
   }
-}
+};

@@ -21,6 +21,7 @@ module.exports = async function handler(req, res) {
     const client = new SerpApi.GoogleSearch(serpKey);
 
     let params = {};
+    console.log('ebay asin:', asin, 'q:', q);
     if (tienda === 'ebay') {
       params = asin
         ? { engine: 'ebay_product', product_id: asin }

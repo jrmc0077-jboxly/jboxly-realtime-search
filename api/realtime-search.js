@@ -18,12 +18,12 @@ export default async function handler(req, res) {
       let sdUrl = '';
 
       if (tienda === 'ebay') {
-        if (asin) {
-          sdUrl = `https://api.scrapingdog.com/ebay/product?api_key=${sdKey}&itemId=${asin}`;
-        } else {
-          sdUrl = `https://api.scrapingdog.com/ebay?api_key=${sdKey}&searchQuery=${encodeURIComponent(q)}&page=${page || 1}`;
-        }
-      }
+  if (asin) {
+    sdUrl = `https://api.scrapingdog.com/ebay/product?api_key=${sdKey}&url=https://www.ebay.com/itm/${asin}`;
+  } else {
+    sdUrl = `https://api.scrapingdog.com/ebay/search?api_key=${sdKey}&url=https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`;
+  }
+}
 
       if (tienda === 'walmart') {
         if (asin) {

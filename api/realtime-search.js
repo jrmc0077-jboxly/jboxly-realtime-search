@@ -12,28 +12,32 @@ export default async function handler(req, res) {
   }
 
   if (tienda === 'ebay' || tienda === 'walmart') {
+    const serpKey = process.env.SERPAPI_KEY;
+    if (!serpKey) {
+      return res.status(500).json({ ok: false, error: 'SERPAPI_KEY no configurada' });
+    }
+    let serpUrl = '';
+    if (tienda === 'ebay') {
+      if (asin) {
+        serpUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
+      } else {
+        serpUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
+      }
+    }
+    if (tienda === 'walmart') {
+      if (asin) {
+        serpUrl = `https://serpapi.com/search.json?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`;
+      } else {
+        serpUrl = `https://serpapi.com/search.json?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
+      }
+    }
     try {
-      const serpKey = process.env.SERPAPI_KEY;
-      let serpUrl = '';
-
-      if (tienda === 'ebay') {
-        if (asin) {
-          serpUrl = `https://serpapi.com/search.json?engine=ebay_item&item_id=${asin}&api_key=${serpKey}`;
-        } else {
-          serpUrl = `https://serpapi.com/search.json?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
-        }
-      }
-
-      if (tienda === 'walmart') {
-        if (asin) {
-          serpUrl = `https://serpapi.com/search.json?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`;
-        } else {
-          serpUrl = `https://serpapi.com/search.json?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
-        }
-      }
-
       const response = await fetch(serpUrl);
-      const data = await response.json();
+      const text = await response.text();
+      if (!response.ok) {
+        return res.status(500).json({ ok: false, error: 'SerpAPI error', status: response.status, body: text.substring(0, 200) });
+      }
+      const data = JSON.parse(text);
       return res.status(200).json({ ok: true, data, fuente: tienda });
     } catch (err) {
       return res.status(500).json({ ok: false, error: 'Error al consultar SerpAPI', detalle: err.message });

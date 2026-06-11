@@ -1,4 +1,5 @@
 const fetch = require('node-fetch');
+const SerpApi = require('google-search-results-nodejs');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -17,25 +18,26 @@ module.exports = async function handler(req, res) {
     const serpKey = process.env.SERPAPI_KEY;
     if (!serpKey) return res.status(500).json({ ok: false, error: 'SERPAPI_KEY no configurada' });
 
-    let serpUrl = '';
+    const client = new SerpApi.GoogleSearch(serpKey);
+
+    let params = {};
     if (tienda === 'ebay') {
-      serpUrl = asin
-        ? `https://serpapi.com/search?engine=ebay_product&item_id=${asin}&api_key=${serpKey}`
-        : `https://serpapi.com/search?engine=ebay&_nkw=${encodeURIComponent(q)}&_pgn=${page || 1}&api_key=${serpKey}`;
+      params = asin
+        ? { engine: 'ebay_product', item_id: asin }
+        : { engine: 'ebay', _nkw: q, _pgn: page || 1 };
     }
     if (tienda === 'walmart') {
-      serpUrl = asin
-        ? `https://serpapi.com/search?engine=walmart_product&product_id=${asin}&api_key=${serpKey}`
-        : `https://serpapi.com/search?engine=walmart&query=${encodeURIComponent(q)}&page=${page || 1}&api_key=${serpKey}`;
+      params = asin
+        ? { engine: 'walmart_product', product_id: asin }
+        : { engine: 'walmart', query: q, page: page || 1 };
     }
 
-    try {
-      const response = await fetch(serpUrl);
-      const data = await response.json();
-      return res.status(200).json({ ok: true, data, fuente: tienda });
-    } catch (err) {
-      return res.status(500).json({ ok: false, error: err.message });
-    }
+    return new Promise((resolve) => {
+      client.json(params, (data) => {
+        res.status(200).json({ ok: true, data, fuente: tienda });
+        resolve();
+      });
+    });
   }
 
   const params = new URLSearchParams({

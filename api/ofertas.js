@@ -61,6 +61,18 @@ async function easyparser(extraParams) {
   return r.json();
 }
 
+async function buscarConReintento(keyword) {
+  // Easyparser a veces devuelve 504 intermitente: reintentamos una vez
+  for (let intento = 0; intento < 2; intento++) {
+    try {
+      const data = await easyparser({ operation: 'SEARCH', keyword: keyword });
+      const items = (data && data.result && data.result.search_results) || [];
+      if (items.length > 0) return items;
+    } catch (e) { /* reintentar */ }
+  }
+  return [];
+}
+
 async function detalleAOferta(asin, debug) {
   try {
     const data = await easyparser({ operation: 'DETAIL', asin: asin });
@@ -115,12 +127,9 @@ module.exports = async function handler(req, res) {
     }
 
     // 2) Buscar y recolectar ASINs candidatos (sin patrocinados)
-    const busquedas = await Promise.all(seleccionadas.map(kw =>
-      easyparser({ operation: 'SEARCH', keyword: kw }).catch(() => null)
-    ));
+    const busquedas = await Promise.all(seleccionadas.map(kw => buscarConReintento(kw)));
     let asins = [];
-    busquedas.forEach(data => {
-      const items = (data && data.result && data.result.search_results) || [];
+    busquedas.forEach(items => {
       items
         .filter(p => p.asin && !p.is_sponsored)
         .slice(0, DETALLES_POR_KEYWORD)

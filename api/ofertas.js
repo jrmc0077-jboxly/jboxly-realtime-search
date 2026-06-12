@@ -13,25 +13,33 @@ const ASINS_OFERTAS = [
   // 'B0YYYYYYYY',
 ];
 
+function aNumero(x) {
+  // Convierte cualquier formato a numero: 229, "229.00", "$229.00",
+  // {value: "229"}, {amount: 229}, {raw: "$229.00"}
+  if (x === null || x === undefined) return 0;
+  if (typeof x === 'number') return x;
+  if (typeof x === 'string') return parseFloat(x.replace(/[^0-9.]/g, '')) || 0;
+  if (typeof x === 'object') return aNumero(x.value) || aNumero(x.amount) || aNumero(x.raw);
+  return 0;
+}
+
 function extraerListPrice(detail) {
   // Easyparser puede traer el precio anterior en distintos campos
   // segun el producto. Probamos todos los candidatos conocidos.
   const bb = detail.buybox_winner || {};
   const candidatos = [
-    bb.rrp && bb.rrp.value,
-    bb.list_price && bb.list_price.value,
-    bb.was_price && bb.was_price.value,
+    bb.rrp,
+    bb.list_price,
+    bb.was_price,
     bb.price && bb.price.before_price,
     bb.price && bb.price.list_price,
-    detail.rrp && detail.rrp.value,
-    detail.list_price && (detail.list_price.value || detail.list_price),
-    detail.original_price,
-    bb.rrp,
-    bb.list_price
+    detail.rrp,
+    detail.list_price,
+    detail.original_price
   ];
   for (const c of candidatos) {
-    const n = parseFloat(c);
-    if (n && n > 0) return n;
+    const n = aNumero(c);
+    if (n > 0) return n;
   }
   return 0;
 }
@@ -82,7 +90,10 @@ module.exports = async function handler(req, res) {
           image: (detail.main_image && detail.main_image.link) || '',
           link: 'https://www.amazon.com/dp/' + asin
         };
-        if (debug) item._debug_buybox_keys = Object.keys(bb);
+        if (debug) {
+          item._debug_buybox_keys = Object.keys(bb);
+          if (!tieneDescuento && bb.rrp !== undefined) item._debug_rrp_raw = bb.rrp;
+        }
         return item;
       } catch (e) {
         return null;

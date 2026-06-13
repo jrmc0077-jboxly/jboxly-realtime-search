@@ -44,6 +44,7 @@ module.exports = async function handler(req, res) {
   const seguro = parseFloat(body.seguro) || 0;
   const feeServicio = parseFloat(body.feeServicio) || 0;
   const pais = body.pais || '';
+  const soloProductos = body.solo_productos === true;  // Modo "Comprar productos ya"
 
   if (!Array.isArray(carrito) || carrito.length === 0) {
     return res.status(400).json({ ok: false, error: 'Carrito vacio' });
@@ -71,50 +72,59 @@ module.exports = async function handler(req, res) {
   });
 
   // 4) Agregar impuestos, seguro, fee y envio como lineas custom
-  if (impuestos > 0) {
-    lineItems.push({
-      title: 'Impuestos (8.25%)',
-      price: impuestos.toFixed(2),
-      quantity: 1,
-      taxable: false,
-      requires_shipping: false
-    });
-  }
-  if (seguro > 0) {
-    lineItems.push({
-      title: 'Seguro obligatorio (5%)',
-      price: seguro.toFixed(2),
-      quantity: 1,
-      taxable: false,
-      requires_shipping: false
-    });
-  }
-  if (feeServicio > 0) {
-    lineItems.push({
-      title: 'Fee de servicio + Manejo y Empaque',
-      price: feeServicio.toFixed(2),
-      quantity: 1,
-      taxable: false,
-      requires_shipping: false
-    });
-  }
-  if (envio > 0) {
-    lineItems.push({
-      title: 'Envio internacional a ' + (pais || 'tu pais'),
-      price: envio.toFixed(2),
-      quantity: 1,
-      taxable: false,
-      requires_shipping: false
-    });
+  // 4) Agregar lineas extra SOLO si no es "solo productos"
+  if (!soloProductos) {
+    if (impuestos > 0) {
+      lineItems.push({
+        title: 'Impuestos (8.25%)',
+        price: impuestos.toFixed(2),
+        quantity: 1,
+        taxable: false,
+        requires_shipping: false
+      });
+    }
+    if (seguro > 0) {
+      lineItems.push({
+        title: 'Seguro obligatorio (5%)',
+        price: seguro.toFixed(2),
+        quantity: 1,
+        taxable: false,
+        requires_shipping: false
+      });
+    }
+    if (feeServicio > 0) {
+      lineItems.push({
+        title: 'Fee de servicio + Manejo y Empaque',
+        price: feeServicio.toFixed(2),
+        quantity: 1,
+        taxable: false,
+        requires_shipping: false
+      });
+    }
+    if (envio > 0) {
+      lineItems.push({
+        title: 'Envio internacional a ' + (pais || 'tu pais'),
+        price: envio.toFixed(2),
+        quantity: 1,
+        taxable: false,
+        requires_shipping: false
+      });
+    }
   }
 
   // 5) Construir payload del Draft Order
+  // Tag distintivo para identificar si es "solo productos" o "completo"
+  const tagModo = soloProductos ? 'solo-productos' : 'completo';
+  const notaModo = soloProductos
+    ? 'MODO: SOLO PRODUCTOS - Pendiente cobrar envio + fee + impuestos en segundo link'
+    : 'MODO: COMPLETO - Incluye productos + envio + fee + impuestos';
+
   const draftOrderPayload = {
     draft_order: {
       line_items: lineItems,
       email: cliente.email,
-      note: 'Pedido JBOXLY - Pais: ' + pais + (cliente.casillero ? ' - Casillero: ' + cliente.casillero : ''),
-      tags: 'jboxly,' + (pais || 'sin-pais').toLowerCase() + ',compra-internacional',
+      note: notaModo + ' | Pais: ' + pais + (cliente.casillero ? ' | Casillero: ' + cliente.casillero : ''),
+      tags: 'jboxly,' + (pais || 'sin-pais').toLowerCase() + ',' + tagModo,
       use_customer_default_address: false
     }
   };

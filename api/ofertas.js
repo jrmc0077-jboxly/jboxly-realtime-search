@@ -114,16 +114,23 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   const debug = req.query.debug === '1';
+  const todas = req.query.todas === '1';
   if (!process.env.EASYPARSER_API_KEY) {
     return res.status(500).json({ ok: false, error: 'EASYPARSER_API_KEY no configurada' });
   }
 
   try {
-    // 1) Elegir keywords segun la hora (rotan solas a lo largo del dia)
-    const horaBloque = Math.floor(Date.now() / (6 * 60 * 60 * 1000));
-    const seleccionadas = [];
-    for (let i = 0; i < KEYWORDS_POR_REFRESH; i++) {
-      seleccionadas.push(KEYWORDS[(horaBloque * KEYWORDS_POR_REFRESH + i) % KEYWORDS.length]);
+    let seleccionadas;
+    if (todas) {
+      // Modo "todas las ofertas": usar TODAS las keywords
+      seleccionadas = KEYWORDS.slice();
+    } else {
+      // Modo home: 2 keywords que rotan cada 6 horas
+      const horaBloque = Math.floor(Date.now() / (6 * 60 * 60 * 1000));
+      seleccionadas = [];
+      for (let i = 0; i < KEYWORDS_POR_REFRESH; i++) {
+        seleccionadas.push(KEYWORDS[(horaBloque * KEYWORDS_POR_REFRESH + i) % KEYWORDS.length]);
+      }
     }
 
     // 2) Buscar y recolectar ASINs candidatos (sin patrocinados)

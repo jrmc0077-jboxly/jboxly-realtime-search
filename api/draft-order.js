@@ -54,14 +54,27 @@ module.exports = async function handler(req, res) {
   }
 
   // 3) Construir line_items custom para Shopify
-  const lineItems = carrito.map(function(item) {
+const lineItems = carrito.map(function(item) {
     const precio = parseFloat(item.precioNum || item.precio || 0);
     const cantidad = parseInt(item.cantidad) || 1;
-    let titulo = (item.tituloEs || item.titulo || 'Producto JBOXLY').substring(0, 240);
+
+    // Shopify limita titulos a 120 chars. Construimos meta primero, despues titulo.
     const meta = [];
     if (item.tienda) meta.push(item.tienda.charAt(0).toUpperCase() + item.tienda.slice(1));
     if (item.variante) meta.push(item.variante);
-    if (meta.length > 0) titulo += ' (' + meta.join(' - ') + ')';
+    const metaStr = meta.length > 0 ? ' (' + meta.join(' - ') + ')' : '';
+
+    // Reservar espacio para el meta
+    const espacioParaTitulo = Math.max(40, 120 - metaStr.length - 3); // -3 por "..."
+    let tituloBase = (item.tituloEs || item.titulo || 'Producto JBOXLY');
+    if (tituloBase.length > espacioParaTitulo) {
+      tituloBase = tituloBase.substring(0, espacioParaTitulo).trim() + '...';
+    }
+
+    let titulo = tituloBase + metaStr;
+    // Garantia final: nunca pasar de 120 chars
+    if (titulo.length > 120) titulo = titulo.substring(0, 120);
+
     return {
       title: titulo,
       price: precio.toFixed(2),

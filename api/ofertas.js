@@ -20,7 +20,7 @@ const KEYWORDS = [
   'security camera', 'electric scooter', 'hair dryer', 'blender'
 ];
 const KEYWORDS_POR_REFRESH = 2;   // busquedas por ejecucion
-const DETALLES_POR_KEYWORD = 8;   // productos a verificar por busqueda
+const DETALLES_POR_KEYWORD = 6;   // productos a verificar por busqueda
 const DESCUENTO_MINIMO = 10;      // % minimo para considerarse oferta
 
 // OPCIONAL: ASINs fijos que siempre quieres mostrar (ej. Prime Day).
@@ -144,8 +144,15 @@ module.exports = async function handler(req, res) {
     });
     ASINS_FIJOS.forEach(a => { if (asins.indexOf(a) === -1) asins.unshift(a); });
 
-    // 3) Verificar cada uno con DETAIL (en paralelo) y quedarnos con las ofertas
-    const resultados = await Promise.all(asins.map(a => detalleAOferta(a, debug)));
+    // 3) Verificar cada uno con DETAIL en LOTES (evita timeout de Vercel)
+    // Procesamos 10 a la vez en vez de todos a la vez
+    const TAMANO_LOTE = 10;
+    const resultados = [];
+    for (let i = 0; i < asins.length; i += TAMANO_LOTE) {
+      const lote = asins.slice(i, i + TAMANO_LOTE);
+      const detallesLote = await Promise.all(lote.map(a => detalleAOferta(a, debug)));
+      resultados.push(...detallesLote);
+    }
     const ofertas = resultados.filter(Boolean).sort((a, b) => b.pct - a.pct);
 
     return res.status(200).json({

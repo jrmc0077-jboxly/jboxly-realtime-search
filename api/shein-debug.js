@@ -1,3 +1,4 @@
+// updated
 // /api/shein-debug.js
 // Version DEBUG: devuelve fragmentos del HTML para inspeccionar la estructura
 // Uso: /api/shein-debug?q=vestido

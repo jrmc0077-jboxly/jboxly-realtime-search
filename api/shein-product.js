@@ -1,6 +1,5 @@
-// /api/shein-deep-debug.js
-// Devuelve fragmentos del HTML alrededor de palabras clave
-// Uso: /api/shein-deep-debug?url=https://us.shein.com/PRODUCTO.html
+// /api/shein-product.js — DEBUG v2 (temporal)
+// Buscar palabras clave nuevas para reviews
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -42,36 +41,35 @@ export default async function handler(req, res) {
     const data = await response.json();
     const html = data.results?.[0]?.content || '';
 
-    if (!html) {
-      return res.status(502).json({ error: 'Empty response' });
-    }
+    if (!html) return res.status(502).json({ error: 'Empty' });
 
-    // Buscar fragmentos alrededor de palabras clave
+    // Buscar palabras clave relacionadas con reviews
     const keywords = [
-      'rating',
-      'comment_rank',
-      'comment_num',
-      'review',
-      'star',
-      'attribute',
-      'specifications',
-      'attr_value',
-      'attr_name',
-      'color_name',
-      'goods_color',
-      'related_color',
-      'goods_desc',
-      'fit_size'
+      '4.57',                    // El rating que el usuario vio
+      '"4.5"',
+      '"4.6"',
+      'Customer Reviews',
+      'View More',
+      'Review Policy',
+      '"average"',
+      'comment_average',
+      'product_score',
+      'avgComment',
+      'commentInfoBo',
+      'reviewInfo',
+      'commentRankAverage',
+      'overall_rating',
+      'productCommentInfo',
+      'goods_score'
     ];
 
     const fragments = {};
 
     keywords.forEach(function(kw) {
-      const idx = html.indexOf('"' + kw);
+      const idx = html.indexOf(kw);
       if (idx !== -1) {
-        // Extraer 400 caracteres alrededor del primer match
-        const start = Math.max(0, idx - 50);
-        const end = Math.min(html.length, idx + 400);
+        const start = Math.max(0, idx - 100);
+        const end = Math.min(html.length, idx + 600);
         fragments[kw] = html.slice(start, end);
       } else {
         fragments[kw] = null;

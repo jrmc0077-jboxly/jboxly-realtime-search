@@ -1,6 +1,7 @@
 // /api/shein-search.js
 // Endpoint que scrapea Shein via Oxylabs Web Scraper API
 // Uso: /api/shein-search?q=vestido
+// Devuelve listado con rating + imagen + URL directa de producto
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -67,27 +68,18 @@ function parseSheinHtml(html) {
   const seen = new Set();
 
   try {
-    // Estrategia 1: extraer cada objeto goods_name suelto del JSON embebido
-    // Shein embebe productos en gbCommonInfo o similar
-    const goodsBlocks = extractGoodsBlocks(html);
+    // Estrategia: extraer cada bloque de producto a partir de "goods_id"
+    // Cada producto en el listado tiene goods_id en su JSON.
+    const blocks = extractGoodsBlocks(html);
 
-    for (const block of goodsBlocks) {
+    for (const block of blocks) {
       const product = extractProductFromBlock(block);
       if (product && !seen.has(product.title)) {
-        seen.add(product.title);
-        products.push(product);
-        if (products.length >= 20) break;
-      }
-    }
-
-    // Estrategia 2: si no encontró nada, intentar parseo HTML directo
-    if (products.length === 0) {
-      const htmlProducts = extractFromHtmlDirect(html);
-      for (const p of htmlProducts) {
-        if (!seen.has(p.title)) {
-          seen.add(p.title);
-          products.push(p);
-          if (products.length >= 20) break;
+        // Filtrar productos sin URL directa de producto
+        if (product.url && product.url.indexOf('-p-') !== -1) {
+          seen.add(product.title);
+          products.push(product);
+          if (products.length >= 30) break;
         }
       }
     }
@@ -98,18 +90,19 @@ function parseSheinHtml(html) {
   return products;
 }
 
-// Extrae bloques de texto alrededor de cada "goods_name"
+// Extrae bloques de texto alrededor de cada "goods_id":"NUMERO"
 function extractGoodsBlocks(html) {
   const blocks = [];
-  const regex = /"goods_name"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  // Buscar el patrón "goods_id":"12345678" o "goods_id":12345678
+  const regex = /"goods_id"\s*:\s*"?(\d{7,12})"?/g;
   let match;
 
-  while ((match = regex.exec(html)) !== null && blocks.length < 40) {
-    // Tomar 2500 caracteres alrededor del match para tener contexto
+  while ((match = regex.exec(html)) !== null && blocks.length < 60) {
+    // Tomar 3000 caracteres alrededor del match para tener contexto
     const start = Math.max(0, match.index - 500);
-    const end = Math.min(html.length, match.index + 2500);
+    const end = Math.min(html.length, match.index + 3000);
     blocks.push({
-      title: unescapeJson(match[1]),
+      goods_id: match[1],
       context: html.slice(start, end),
     });
   }
@@ -118,87 +111,78 @@ function extractGoodsBlocks(html) {
 }
 
 function extractProductFromBlock(block) {
-  const { title, context } = block;
+  const { goods_id, context } = block;
+
+  // Título
+  const titleMatch = context.match(/"goods_name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!titleMatch) return null;
+  const title = unescapeJson(titleMatch[1]);
   if (!title || title.length < 5) return null;
 
-  // Buscar precio: "amount":"15.99" o "amountWithSymbol":"$15.99" o "usdAmount":"15.99"
+  // Precio
   let price = '';
-  const priceMatch = context.match(/"amountWithSymbol"\s*:\s*"([^"]+)"/) ||
-                     context.match(/"amount"\s*:\s*"(\d+\.\d{2})"/) ||
-                     context.match(/"usdAmount"\s*:\s*"(\d+\.\d{2})"/) ||
-                     context.match(/\$(\d+\.\d{2})/);
-
+  const priceMatch = context.match(/"salePrice"\s*:\s*\{[^}]*"amountWithSymbol"\s*:\s*"([^"]+)"/) ||
+                     context.match(/"amountWithSymbol"\s*:\s*"(\$\d+\.\d{2})"/) ||
+                     context.match(/"amount"\s*:\s*"(\d+\.\d{2})"/);
   if (priceMatch) {
     price = priceMatch[1].startsWith('$') ? priceMatch[1] : `$${priceMatch[1]}`;
   }
 
+  // Precio original (tachado)
+  let originalPrice = '';
+  const oldPriceMatch = context.match(/"retailPrice"\s*:\s*\{[^}]*"amountWithSymbol"\s*:\s*"([^"]+)"/);
+  if (oldPriceMatch) originalPrice = oldPriceMatch[1];
+
   if (!price) return null;
 
-  // Buscar imagen: "goods_img":"..."
+  // Imagen
   let image = '';
-  const imgMatch = context.match(/"goods_img"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const imgMatch = context.match(/"goods_img"\s*:\s*"((?:[^"\\]|\\.)*)"/) ||
+                   context.match(/"origin_image"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (imgMatch) {
     image = unescapeJson(imgMatch[1]);
     if (image.startsWith('//')) image = 'https:' + image;
   }
 
-  // Buscar ID/sn: "goods_id":"123456" y "goods_sn":"sn"
-  let goodsId = '';
-  const idMatch = context.match(/"goods_id"\s*:\s*"?(\d+)"?/);
-  if (idMatch) goodsId = idMatch[1];
+  // Rating (en el listado usualmente como "comment_rank_average" o "score")
+  let rating = 0;
+  const ratingMatch = context.match(/"comment_rank_average"\s*:\s*"?([\d.]+)"?/) ||
+                      context.match(/"score"\s*:\s*"?([\d.]+)"?/) ||
+                      context.match(/"productRelationID"[^}]*"score"\s*:\s*"?([\d.]+)"?/);
+  if (ratingMatch) {
+    const r = parseFloat(ratingMatch[1]);
+    if (r > 0 && r <= 5) rating = r;
+  }
 
-  let goodsSn = '';
+  // Reviews count
+  let reviewsCount = 0;
+  const reviewsMatch = context.match(/"comment_num"\s*:\s*"?(\d+)"?/) ||
+                       context.match(/"comment_num_show"\s*:\s*"?(\d+)"?/);
+  if (reviewsMatch) {
+    reviewsCount = parseInt(reviewsMatch[1]) || 0;
+  }
+
+  // goods_sn (para construir URL bonita)
   const snMatch = context.match(/"goods_sn"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  if (snMatch) goodsSn = snMatch[1];
+  const goodsSn = snMatch ? unescapeJson(snMatch[1]) : '';
 
-  // Construir URL
-  const slug = title.trim().slice(0, 60).replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
-  const url = goodsId
-    ? `https://us.shein.com/${encodeURIComponent(slug)}-p-${goodsId}.html`
-    : `https://us.shein.com/search/${encodeURIComponent(title)}`;
+  // Construir URL directa al producto usando goods_id
+  // Formato: https://us.shein.com/SLUG-p-GOODSID.html
+  const slug = title.trim().slice(0, 80).replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
+  const url = `https://us.shein.com/${encodeURIComponent(slug)}-p-${goods_id}.html`;
 
   return {
     title: title.trim(),
     price,
+    originalPrice,
     image,
     url,
+    goods_id,
+    goods_sn: goodsSn,
+    rating,
+    reviewsCount,
     source: 'shein',
   };
-}
-
-// Fallback: extraer desde HTML directo
-function extractFromHtmlDirect(html) {
-  const products = [];
-  const cardRegex = /<section[^>]*class="[^"]*product-card[^"]*"[\s\S]{0,4000}?<\/section>/gi;
-  const matches = html.match(cardRegex) || [];
-
-  for (const card of matches.slice(0, 20)) {
-    const titleMatch = card.match(/title="([^"]+)"/) || card.match(/alt="([^"]+)"/);
-    const priceMatch = card.match(/\$\s*(\d+\.\d{2})/);
-    const imgMatch = card.match(/<img[^>]+(?:data-src|src)="([^"]+)"/);
-    const linkMatch = card.match(/href="(\/[^"]+\.html)"/);
-
-    if (titleMatch && priceMatch) {
-      const title = titleMatch[1].trim();
-      if (title.length < 5) continue;
-
-      let image = imgMatch ? imgMatch[1] : '';
-      if (image.startsWith('//')) image = 'https:' + image;
-
-      let url = linkMatch ? linkMatch[1] : '';
-      if (url.startsWith('/')) url = 'https://us.shein.com' + url;
-
-      products.push({
-        title,
-        price: `$${priceMatch[1]}`,
-        image,
-        url,
-        source: 'shein',
-      });
-    }
-  }
-
-  return products;
 }
 
 function unescapeJson(str) {

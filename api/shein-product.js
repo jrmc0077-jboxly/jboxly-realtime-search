@@ -150,15 +150,46 @@ function parseSheinProductDetail(html) {
     }
     product.sizes = Array.from(sizesSet).slice(0, 15);
 
-    // ===== Colores =====
-    const colorsSet = new Set();
-    const colorRegex = /"goods_color_name"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    let cm;
-    while ((cm = colorRegex.exec(html)) !== null && colorsSet.size < 10) {
-      const colorName = unescapeJson(cm[1]);
-      if (colorName) colorsSet.add(colorName);
+    // ===== Colores (extraer imagenes mini de variantes de color) =====
+    // Shein expone goods_color_image (URL de imagen mini) para cada color
+    const colorMap = new Map(); // image -> {image, name}
+    
+    // Patrón 1: pares goods_id + goods_color_image (variantes del producto)
+    const colorBlockRegex = /"goods_id"\s*:\s*"?(\d+)"?[^{]*?"goods_color_image"\s*:\s*"((?:[^"\\]|\\.)*)"[^{]{0,500}?"goods_url_name"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let colorBlock;
+    while ((colorBlock = colorBlockRegex.exec(html)) !== null && colorMap.size < 12) {
+      const variantId = colorBlock[1];
+      let img = unescapeJson(colorBlock[2]);
+      if (img.startsWith('//')) img = 'https:' + img;
+      const nameRaw = unescapeJson(colorBlock[3] || '');
+      // Solo agregar si la URL es valida y no esta repetida
+      if (img && img.length > 20 && !colorMap.has(img)) {
+        colorMap.set(img, {
+          image: img,
+          id: variantId,
+          name: nameRaw.split(' ').slice(0, 3).join(' ').trim() || `Color ${colorMap.size + 1}`
+        });
+      }
     }
-    product.colors = Array.from(colorsSet);
+
+    // Patrón 2: solo goods_color_image (fallback)
+    if (colorMap.size === 0) {
+      const fallbackRegex = /"goods_color_image"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      let cm;
+      while ((cm = fallbackRegex.exec(html)) !== null && colorMap.size < 12) {
+        let img = unescapeJson(cm[1]);
+        if (img.startsWith('//')) img = 'https:' + img;
+        if (img && img.length > 20 && !colorMap.has(img)) {
+          colorMap.set(img, {
+            image: img,
+            id: '',
+            name: `Color ${colorMap.size + 1}`
+          });
+        }
+      }
+    }
+
+    product.colors = Array.from(colorMap.values());
 
     // ===== Specs (attr_name / attr_value) =====
     // Buscar todos los pares attr_name + attr_value

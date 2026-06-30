@@ -13,7 +13,8 @@ const DOMINIOS_VALIDOS = [
   'amazon.com', 'www.amazon.com', 'm.amazon.com',
   'ebay.us', 'ebay.to', 'rover.ebay.com',
   'ebay.com', 'www.ebay.com', 'm.ebay.com',
-  'walmart.com', 'www.walmart.com', 'm.walmart.com'
+  'walmart.com', 'www.walmart.com', 'm.walmart.com',
+  'shein.top', 'api-shein.shein.com', 'shein.com', 'us.shein.com', 'www.shein.com'
 ];
 
 module.exports = async function handler(req, res) {
